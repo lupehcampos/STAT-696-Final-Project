@@ -1,0 +1,107 @@
+---
+title: "Base Project"
+author: "YOUR NAME HERE"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    df_print: paged
+    fig_height: 3
+    fig_width: 5
+  pdf_document: default
+---
+
+
+
+Install all packages for Math 356 online course textbook: 
+
+```{r echo=FALSE, eval=FALSE, message=F, warning=F}
+install.packages(c(
+  "broom",
+  "car",
+  "cubature",
+  "dbplyr",
+  "dplyr",
+  "fastR2",
+  "GGally",
+  "ggformula",
+  "ggplot2",
+  "ggthemes",
+  "gt",
+  "infer",
+  "ISLR",
+  "kableExtra",
+  "knitr",
+  "leaps",
+  "lmtest",
+  "metR",
+  "mosaic",
+  "mosaicCalc",
+  "nlme",
+  "olsrr",
+  "onewaytests",
+  "openintro",
+  "patchwork",
+  "rlang",
+  "rmarkdown",
+  "shiny",
+  "Stat2Data",
+  "tidyr",
+  "tidyverse",
+  "usdata",
+  "vcd",
+  "vcdExtra",
+  "naniar"
+))
+
+```
+
+Install tinytex so you can knit to PDF
+
+```{r}
+install.packages("tinytex")
+library(tinytex)
+```
+
+Load the other packages: 
+
+```{r load_packages,echo=FALSE,message=FALSE,warning=F}
+library(broom)
+library(car)
+library(cubature)
+library(dbplyr)
+library(dplyr)
+library(fastR2)
+library(GGally)
+library(ggformula)
+library(ggplot2)
+library(ggthemes)
+library(gt)
+library(infer)
+library(ISLR)
+library(kableExtra)
+library(knitr)
+library(leaps)
+library(lmtest)
+library(metR)
+library(mosaic)
+library(mosaicCalc)
+library(nlme)
+library(olsrr)
+library(onewaytests)
+library(openintro)
+library(patchwork)
+library(rlang)
+library(rmarkdown)
+library(shiny)
+library(Stat2Data)
+library(tidyr)
+library(tidyverse)
+library(usdata)
+library(vcd)
+library(vcdExtra)
+library(naniar)
+
+options(digits = 10)
+```
+
+

@@ -1,0 +1,2688 @@
+---
+title: "Final"
+author: "Megan Steele"
+date: "`r Sys.Date()`"
+output:
+  bookdown::pdf_document2:
+    toc: false
+    number_sections: false
+geometry: margin=1in
+fontsize: 10pt
+header-includes:
+  - \usepackage{xcolor}
+  - \usepackage{hyperref}
+  - \hypersetup{
+      colorlinks=true,
+      linkcolor=blue,
+      citecolor=green,
+      urlcolor=red
+    }
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(MASS)
+library(mosaic)
+library(mosaicCalc)
+library(tidyverse)
+library(broom)
+library(car)
+library(ggplot2)
+library(kableExtra)
+library(gridExtra)
+library(grid)
+library(onewaytests)
+library(lmtest)
+library(nlme)
+library(caret)
+library(dplyr)
+library(splines)
+library(GGally)
+library(leaps)
+library(naniar)
+options(digits = 10) 
+```
+
+## Data Pre-processing
+
+Load in the dataset. 
+```{r, results='hold'}
+car = read.csv("MPG.csv")
+```
+
+A first look at the data:
+```{r, results='hold'}
+head(car)
+```
+
+Here's a quick summary of the variables:
+
+- cylinders: The number of cylinders in the vehicle’s engine. Vehicles with more cylinders typically have larger, more powerful engines, which tend to consume more fuel.
+- displacement: The total volume of all cylinders in the engine. Larger displacement generally corresponds to a more powerful engine and is often associated with lower fuel efficiency.
+- horsepower: A measure of engine power. Vehicles with higher horsepower usually consume more fuel, as they are designed more for performance than for efficiency.
+- weight: The total weight of the vehicle. Heavier cars require more energy to move, which typically reduces mpg.
+- acceleration: The time it takes for the vehicle to reach a certain speed. Faster acceleration often indicates a performance-oriented vehicle, which can impact fuel efficiency.
+- model year: The year the vehicle model was produced. This variable can capture technological improvements over time, as newer cars often benefit from advances in fuel efficiency.
+- car name: The vehicle’s name, usually including make and model. As unique identifiers, these names do not have a direct numerical impact on fuel efficiency and will thus not be used in predictive modeling. However, they can be useful for reference or exploration, for example, to identify specific cars in the dataset.
+
+The response variable in this dataset is mpg (miles per gallon), which indicates how many miles a vehicle can travel on one gallon of fuel. Our goal in this project is to use the other variables to predict mpg. Therefore, our primary focus is on accurate prediction rather than on interpreting the effects of individual predictors.
+
+First, we check for duplicated data and missing values. 
+```{r, results='hold'}
+# --- Check for duplicates ---
+# View rows with duplicated data
+car[duplicated(car), ]
+
+# --- Check for missing values ---
+# View rows with any missing values
+car[!complete.cases(car), ]
+```
+
+We observe that there are no duplicate row entries in the data, but there are 14 rows with missing data. 
+
+Below we calculate the number of missing entries for each column. 
+```{r, results='hold'}
+colSums(is.na(car))
+```
+
+
+To determine whether the missing values in the dataset can be considered Missing Completely at Random (MCAR), we conducted Little’s MCAR Test. This test evaluates whether the probability of a value being missing is unrelated to any observed or unobserved data in the dataset.
+
+The hypotheses for the test are:
+$$
+\begin{aligned}
+H_0: &\quad \text{The missing data are MCAR} \\
+H_A: &\quad \text{The missing data are not MCAR}
+\end{aligned}
+$$
+
+```{r, results='hold'}
+naniar::mcar_test(car)
+```
+
+Since the $p$-value is greater than $\alpha = 0.05$, we fail to reject the null hypothesis and conclude that the missing data are plausibly MCAR. In other words, at the 0.05 significance level, there is no strong evidence that the missingness depends on any observed or unobserved variables.
+
+Handling missing values early is important. We will postpone any decision to impute or remove missing entries until after completing our initial exploratory data analysis.
+
+Next, we examine the variable data types:
+```{r, results='hold'}
+str(car)
+```
+
+The variables mpg, displacement, horsepower, weight, and acceleration should all be treated as continuous numerical variables. Currently, RStudio is interpreting horsepower and weight as integers, which will need to be corrected.
+
+The variables cylinders and model year are multi-valued discrete variables. For cylinders, we must decide whether to treat it as a quantitative integer or a categorical variable. Treating it as numeric implies a linear effect on mpg, which may not be appropriate. Treating cylinders as categorical variable allows each cylinder count to represent its own group without assuming linearity. Similarly, model year could be treated as a numeric variable, which implies a continuous trend in mpg over time. Or we can treat model year as a categorical variable to capture year-specific effects. Again, these decisions will be held to the end after we are given an opportunity to perform our initial exploratory data analysis.
+
+We must also consider how to handle the variable car name.
+```{r, results='hold'}
+length(unique(car$car.name))
+```
+
+This reveals 312 unique values, indicating that nearly every vehicle in the dataset has its own distinct name. Before deciding whether to use car name as a predictor, we note two important complications. First, the dataset contains numerous spelling inconsistencies. For example, chevroelt, maxda, toyouta, and vokswagen are all typos. This artificially inflates the number of unique names. Second, treating car name as a categorical variable could potentially introduce hundreds of factor levels, each consuming a degree of freedom and potentially leading to severe overfitting.
+
+For these reasons, we will postpone any decision about whether and how to use information from car name until after completing our exploratory data analysis, at which point it will be clearer whether this variable (or a derived form of it) is useful for modeling mpg.
+
+## Exploratory Data Analysis 
+
+We now proceed with graphical diagnostics for the response variable (mpg) and for the predictor variables to assess their distribution and identify any potential extreme values that could influence the regression analysis.
+
+```{r, fig.width = 5, fig.height = 3, results='hold'}
+p1 = ggplot(car, aes(x = mpg)) +
+  geom_histogram(binwidth = 2 * IQR(car$mpg, na.rm = TRUE) / nrow(car)^(1/3), # Freedman–Diaconis Rule
+                 fill = "steelblue", color = "black") +
+  ggtitle("Miles Per Gallon") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+p2 = ggplot(car, aes(x = cylinders)) +
+  geom_bar(fill = "steelblue", color = "black") +  # categorical variable
+  ggtitle("Number of Cylinders") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+p3 = ggplot(car, aes(x = displacement)) +
+  geom_histogram(binwidth = 2 * IQR(car$displacement, na.rm = TRUE) / nrow(car)^(1/3), # Freedman–Diaconis Rule
+                 fill = "steelblue", color = "black") +
+  ggtitle("Displacement") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+p4 = ggplot(car, aes(x = horsepower)) +
+  geom_histogram(binwidth = 2 * IQR(car$horsepower, na.rm = TRUE) / nrow(car)^(1/3), # Freedman–Diaconis Rule
+                 fill = "steelblue", color = "black") +
+  ggtitle("Horsepower") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+p5 = ggplot(car, aes(x = weight)) +
+  geom_histogram(binwidth = 2 * IQR(car$weight, na.rm = TRUE) / nrow(car)^(1/3), # Freedman–Diaconis Rule
+                 fill = "steelblue", color = "black") +
+  ggtitle("Weight") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+p6 = ggplot(car, aes(x = acceleration)) +
+  geom_histogram(binwidth = 2 * IQR(car$acceleration, na.rm = TRUE) / nrow(car)^(1/3), # Freedman–Diaconis Rule
+                 fill = "steelblue", color = "black") +
+  ggtitle("Acceleration") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+p7 = ggplot(car, aes(x = model.year)) +
+  geom_bar(fill = "steelblue", color = "black") +
+  ggtitle("Model Year Group") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+plots = list(p1, p2, p3, p4, p5, p6, p7)
+
+for (i in seq_along(plots)) {
+  print(plots[[i]])
+  ggsave(filename = sprintf("figures/car_plot_%02d.png", i),
+         plot = plots[[i]],
+         width = 5,
+         height = 3,     
+         units = "in",
+         dpi = 300)
+}
+```
+
+The plots above have been saved to the `figures` folder. 
+
+The response variable (mpg) is right-skewed. Similarly, the predictor variables displacement, horsepower, and weight are all right-skewed. This indicates that most vehicles are relatively light but there are a few much heavier vehicles. Since lighter vehicles tend to have smaller engines, this means that these vehicles tend to have smaller displacements and consequently lower horsepower. This could account for the skew we observe. Additionally, there are missing values for mpg and horsepower that will need to be addressed.
+
+The right-skewed distributions of displacement, horsepower, and weight suggest that if there is an issue with non-linearity, possibly applying a log or square-root transformation may improve that linearity.
+
+For the most part, the distribution of acceleration appears to be symmetrical about a mean value of approximately 16. The skewed distributions of the predictor variables indicate that we should carefully check the standard assumptions of linear regression (linearity, constant variance of the errors, independence of observations, and approximate normality of residuals).
+
+The bar plot for cylinders shows that cars with an odd number of cylinders are rare. This aligns with engineering practices, as most engines are designed with an even number of cylinders for operational balance. Given the small number of observations for odd-cylinder cars, we will consider potentially removing these entries from the dataset.
+
+```{r, fig.width = 5, fig.height = 3, results='hold'}
+b1 = ggplot(car, aes(y = mpg)) +
+  geom_boxplot(fill = "steelblue", color = "black", na.rm = TRUE) +
+  ggtitle("Miles Per Gallon") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+b2 = ggplot(car, aes(y = displacement)) +
+  geom_boxplot(fill = "steelblue", color = "black", na.rm = TRUE) +
+  ggtitle("Displacement") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+b3 = ggplot(car, aes(y = horsepower)) +
+  geom_boxplot(fill = "steelblue", color = "black", na.rm = TRUE) +
+  ggtitle("Horsepower") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+b4 = ggplot(car, aes(y = weight)) +
+  geom_boxplot(fill = "steelblue", color = "black", na.rm = TRUE) +
+  ggtitle("Weight") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+b5 = ggplot(car, aes(y = acceleration)) +
+  geom_boxplot(fill = "steelblue", color = "black", na.rm = TRUE) +
+  ggtitle("Acceleration") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# Boxplot for categorical variables (cylinders and model.year)
+b6 = ggplot(car, aes(x = factor(cylinders), y = mpg)) +
+  geom_boxplot(fill = "steelblue", color = "black", na.rm = TRUE) +
+  ggtitle("MPG by Cylinders") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+b7 = ggplot(car, aes(x = factor(model.year), y = mpg)) +
+  geom_boxplot(fill = "steelblue", color = "black", na.rm = TRUE) +
+  ggtitle("MPG by Model Year") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+boxplots = list(b1, b2, b3, b4, b5, b6, b7)
+
+for (i in seq_along(boxplots)) {
+  print(boxplots[[i]])
+  ggsave(filename = sprintf("figures/car_boxplot_%02d.png", i),
+         plot = boxplots[[i]],
+         width = 5,
+         height = 3,     
+         units = "in",
+         dpi = 300)
+}
+```
+
+Based on the box plots above, we observe potential outliers in mpg, horsepower, acceleration, cylinders, and model year. These extreme values likely reflect unusual vehicle types, manufacturing years, or specific engine configurations, and we will investigate them further to understand their impact on the dataset and subsequent modeling.
+
+Below we look at these extreme values. 
+```{r, results='hold'}
+# Find rows where mpg is an outlier
+mpg_outliers = car[car$mpg %in% boxplot.stats(car$mpg)$out, ]
+mpg_outliers
+```
+For mpg, the Mazda GLC from 1980 is flagged as an extreme high value. This is a small, lightweight, fuel-efficient car, which explains its exceptionally high miles per gallon. Its characteristics explain the extremely high mpg.
+
+```{r, results='hold'}
+# Find rows where horsepower is an outlier
+mpg_outliers = car[car$horsepower %in% boxplot.stats(car$horsepower)$out, ]
+mpg_outliers
+```
+
+For horsepower,the flagged cars are primarily muscle cars or large luxury vehicles from the early 1970s. These vehicles were designed for power and performance, so their high horsepower values are reasonable within this context. 
+
+```{r, results='hold'}
+# Find rows where acceleration is an outlier
+mpg_outliers = car[car$acceleration %in% boxplot.stats(car$acceleration)$out, ]
+mpg_outliers
+```
+
+For acceleration, the extreme values occur at both ends of the spectrum. Cars like the Ford Mustang Boss 302 and Plymouth ’Cuda 340 have acceleration around 8 seconds, which is much faster than most cars in the dataset. These are high-performance muscle cars with powerful engines, explaining their unusually low acceleration times. On the other end, vehicles like the VW Dasher (diesel), VW Pickup, Peugeot 504, and Volkswagen Type 3 have acceleration around 23-24 seconds, which is extremely slow compared to typical passenger cars. These are lightweight, low-power, or diesel vehicles, where acceleration is not a priority. 
+
+These extreme values are not necessarily errors but may have high leverage in regression models. High-leverage points can disproportionately influence estimated regression coefficients, potentially skewing predictions. To assess influence, we will compute studentized deleted residuals and Cook’s distance after finalizing the regression model.
+
+Summary statistics are below.
+```{r, results='hold'}
+inspect(car)
+```
+
+The mean value for mpg is is 23.514573. We also note that 50% of the vehicles in our sample have an mpg less than 23.0.
+
+Below we provide scatterplots of the response variable (mpg) against all candidate predictor variables. These plots serve as a reference for the relationships between the predictors and the response. In other words they offer a preliminary sense of the form and strength of association that may be appropriate to model in the regression analysis. These plots are also consolidated in the scatter matrix plot provided later on. 
+
+```{r, fig.width = 5, fig.height = 3, results='hold'}
+s1 = ggplot(car, aes(x = cylinders, y = mpg)) +
+  geom_point(alpha = 0.4, size = 1, color = "darkred") + 
+  geom_smooth(method = "loess", color = "steelblue", se = FALSE, size = 1) +
+  labs(x = "cylinders", 
+       y = "mpg",
+       title = "MPG vs Cylinders") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+s2 = ggplot(car, aes(x = displacement, y = mpg)) +
+  geom_point(alpha = 0.4, size = 1, color = "darkred") + 
+  geom_smooth(method = "loess", color = "steelblue", se = FALSE, size = 1) +
+  labs(x = "displacement", 
+       y = "mpg",
+       title = "MPG vs Displacement") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+s3 = ggplot(car, aes(x = horsepower, y = mpg)) +
+  geom_point(alpha = 0.4, size = 1, color = "darkred") + 
+  geom_smooth(method = "loess", color = "steelblue", se = FALSE, size = 1) +
+  labs(x = "horsepower", 
+       y = "mpg",
+       title = "MPG vs Horsepower") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+s4 = ggplot(car, aes(x = weight, y = mpg)) +
+  geom_point(alpha = 0.4, size = 1, color = "darkred") + 
+  geom_smooth(method = "loess", color = "steelblue", se = FALSE, size = 1) +
+  labs(x = "weight", 
+       y = "mpg",
+       title = "MPG vs Weight") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+s5 = ggplot(car, aes(x = acceleration, y = mpg)) +
+  geom_point(alpha = 0.4, size = 1, color = "darkred") + 
+  geom_smooth(method = "loess", color = "steelblue", se = FALSE, size = 1) +
+  labs(x = "acceleration", 
+       y = "mpg",
+       title = "MPG vs Acceleration") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+s6 = ggplot(car, aes(x = model.year, y = mpg)) +
+  geom_point(alpha = 0.4, size = 1, color = "darkred") + 
+  geom_smooth(method = "loess", color = "steelblue", se = FALSE, size = 1) +
+  labs(x = "model.year", 
+       y = "mpg",
+       title = "MPG vs Model Year") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+scatter_plots = list(s1, s2, s3, s4, s5, s6)
+
+for (i in seq_along(scatter_plots)) {
+  print(scatter_plots[[i]])
+  ggsave(filename = sprintf("figures/scatter_plot_%02d.png", i),
+         plot = scatter_plots[[i]],
+         width = 5,
+         height = 3,     
+         units = "in",
+         dpi = 300)
+}
+```
+
+A second useful diagnostic for the response and predictor variables is a sequence plot. With 406 observations, plotting each point and connecting them with a line produces a cluttered figure, so as an alternative we also produce a sequence plot with an LOESS smooth line overlaid on top to summarize the overall trend. Both sequence plots can also be viewed below for each variable.
+
+First we plot everything and then discuss afterwards. Plots are saved to the folder `figures`. 
+
+```{r, fig.width = 5, fig.height = 3, results='hold'}
+mpg_seq = ggplot(car, aes(x = 1:nrow(car), y = mpg)) +
+  geom_line(color = "steelblue") +
+  geom_point(color = "darkred", size = 1.5) +
+  labs(title = "Sequence Plot of MPG",
+       x = "Observation Order",
+       y = "mpg") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+mpg_seq
+
+# Save the plot as a PNG
+ggsave(filename = "figures/mpg_seq.png",
+  plot = mpg_seq,
+  width = 5,
+  height = 3,     
+  units = "in",
+  dpi = 300)
+```
+
+```{r, fig.width = 5, fig.height = 3, results='hold'}
+mpg_seq2 = ggplot(car, aes(x = 1:nrow(car), y = mpg)) +
+  geom_point(alpha = 0.4, size = 1, color = "darkred") + 
+  geom_smooth(method = "loess", color = "steelblue", se = FALSE, size = 1) +
+  labs(title = "Sequence Plot of MPG",
+       x = "Observation Order",
+       y = "mpg") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+mpg_seq2
+
+# Save the plot as a PNG
+ggsave(filename = "figures/mpg_seq2.png",
+  plot = mpg_seq2,
+  width = 5,
+  height = 3,     
+  units = "in",
+  dpi = 300)
+```
+
+```{r, fig.width = 5, fig.height = 3, results='hold'}
+cyl_seq = ggplot(car, aes(x = 1:nrow(car), y = cylinders)) +
+  geom_line(color = "steelblue") +
+  geom_point(color = "darkred", size = 1.5) +
+  labs(title = "Sequence Plot of Cylinders",
+       x = "Observation Order",
+       y = "cylinders") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+cyl_seq
+
+# Save the plot as a PNG
+ggsave(filename = "figures/cyl_seq.png",
+  plot = cyl_seq,
+  width = 5,
+  height = 3,     
+  units = "in",
+  dpi = 300)
+```
+
+```{r, fig.width = 5, fig.height = 3, results='hold'}
+cyl_seq2 = ggplot(car, aes(x = 1:nrow(car), y = cylinders)) +
+  geom_point(alpha = 0.4, size = 1, color = "darkred") + 
+  geom_smooth(method = "loess", color = "steelblue", se = FALSE, size = 1) +
+  labs(title = "Sequence Plot of Cylinders",
+       x = "Observation Order",
+       y = "cylinders") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+cyl_seq2
+
+# Save the plot as a PNG
+ggsave(filename = "figures/cyl_seq2.png",
+  plot = cyl_seq2,
+  width = 5,
+  height = 3,     
+  units = "in",
+  dpi = 300)
+```
+
+
+```{r, fig.width = 5, fig.height = 3, results='hold'}
+dis_seq = ggplot(car, aes(x = 1:nrow(car), y = displacement)) +
+  geom_line(color = "steelblue") +
+  geom_point(color = "darkred", size = 1.5) +
+  labs(title = "Sequence Plot of Displacement",
+       x = "Observation Order",
+       y = "displacement") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+dis_seq
+
+# Save the plot as a PNG
+ggsave(filename = "figures/dis_seq.png",
+  plot = dis_seq,
+  width = 5,
+  height = 3,     
+  units = "in",
+  dpi = 300)
+```
+
+
+```{r, fig.width = 5, fig.height = 3, results='hold'}
+dis_seq2 = ggplot(car, aes(x = 1:nrow(car), y = displacement)) +
+  geom_point(alpha = 0.4, size = 1, color = "darkred") + 
+  geom_smooth(method = "loess", color = "steelblue", se = FALSE, size = 1) +
+  labs(title = "Sequence Plot of Displacement",
+       x = "Observation Order",
+       y = "displacement") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+dis_seq2
+
+# Save the plot as a PNG
+ggsave(filename = "figures/dis_seq2.png",
+  plot = dis_seq2,
+  width = 5,
+  height = 3,     
+  units = "in",
+  dpi = 300)
+```
+
+```{r, fig.width = 5, fig.height = 3, results='hold'}
+horse_seq = ggplot(car, aes(x = 1:nrow(car), y = horsepower)) +
+  geom_line(color = "steelblue") +
+  geom_point(color = "darkred", size = 1.5) +
+  labs(title = "Sequence Plot of Horsepower",
+       x = "Observation Order",
+       y = "horsepower") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+horse_seq
+
+# Save the plot as a PNG
+ggsave(filename = "figures/horse_seq.png",
+  plot = horse_seq,
+  width = 5,
+  height = 3,     
+  units = "in",
+  dpi = 300)
+```
+
+```{r, fig.width = 5, fig.height = 3, results='hold'}
+horse_seq2 = ggplot(car, aes(x = 1:nrow(car), y = horsepower)) +
+  geom_point(alpha = 0.4, size = 1, color = "darkred") + 
+  geom_smooth(method = "loess", color = "steelblue", se = FALSE, size = 1) +
+  labs(title = "Sequence Plot of Horsepower",
+       x = "Observation Order",
+       y = "horsepower") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+horse_seq2
+
+# Save the plot as a PNG
+ggsave(filename = "figures/horse_seq2.png",
+  plot = horse_seq2,
+  width = 5,
+  height = 3,     
+  units = "in",
+  dpi = 300)
+```
+
+
+```{r, fig.width = 5, fig.height = 3, results='hold'}
+weight_seq = ggplot(car, aes(x = 1:nrow(car), y = weight)) +
+  geom_line(color = "steelblue") +
+  geom_point(color = "darkred", size = 1.5) +
+  labs(title = "Sequence Plot of Weight",
+       x = "Observation Order",
+       y = "weight") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+weight_seq
+
+# Save the plot as a PNG
+ggsave(filename = "figures/weight_seq.png",
+  plot = weight_seq,
+  width = 5,
+  height = 3,     
+  units = "in",
+  dpi = 300)
+```
+
+```{r, fig.width = 5, fig.height = 3, results='hold'}
+weight_seq2 = ggplot(car, aes(x = 1:nrow(car), y = weight)) +
+  geom_point(alpha = 0.4, size = 1, color = "darkred") + 
+  geom_smooth(method = "loess", color = "steelblue", se = FALSE, size = 1) +
+  labs(title = "Sequence Plot of Weight",
+       x = "Observation Order",
+       y = "weight") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+weight_seq2
+
+# Save the plot as a PNG
+ggsave(filename = "figures/weight_seq2.png",
+  plot = weight_seq2,
+  width = 5,
+  height = 3,     
+  units = "in",
+  dpi = 300)
+```
+
+```{r, fig.width = 5, fig.height = 3, results='hold'}
+acc_seq = ggplot(car, aes(x = 1:nrow(car), y = acceleration)) +
+  geom_line(color = "steelblue") +
+  geom_point(color = "darkred", size = 1.5) +
+  labs(title = "Sequence Plot of Acceleration",
+       x = "Observation Order",
+       y = "acceleration") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+acc_seq
+
+# Save the plot as a PNG
+ggsave(filename = "figures/acc_seq.png",
+  plot = acc_seq,
+  width = 5,
+  height = 3,     
+  units = "in",
+  dpi = 300)
+```
+
+```{r, fig.width = 5, fig.height = 3, results='hold'}
+acc_seq2 = ggplot(car, aes(x = 1:nrow(car), y = acceleration)) +
+  geom_point(alpha = 0.4, size = 1, color = "darkred") + 
+  geom_smooth(method = "loess", color = "steelblue", se = FALSE, size = 1) +
+  labs(title = "Sequence Plot of Acceleration",
+       x = "Observation Order",
+       y = "acceleration") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+acc_seq2
+
+# Save the plot as a PNG
+ggsave(filename = "figures/acc_seq2.png",
+  plot = acc_seq2,
+  width = 5,
+  height = 3,     
+  units = "in",
+  dpi = 300)
+```
+
+```{r, fig.width = 5, fig.height = 3, results='hold'}
+year_seq = ggplot(car, aes(x = 1:nrow(car), y = model.year)) +
+  geom_line(color = "steelblue") +
+  geom_point(color = "darkred", size = 1.5) +
+  labs(title = "Sequence Plot of Model Year",
+       x = "Observation Order",
+       y = "model year") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+year_seq
+
+# Save the plot as a PNG
+ggsave(filename = "figures/year_seq.png",
+  plot = year_seq,
+  width = 5,
+  height = 3,     
+  units = "in",
+  dpi = 300)
+```
+
+```{r, fig.width = 5, fig.height = 3, results='hold'}
+year_seq2 = ggplot(car, aes(x = 1:nrow(car), y = model.year)) +
+  geom_point(alpha = 0.4, size = 1, color = "darkred") + 
+  geom_smooth(method = "loess", color = "steelblue", se = FALSE, size = 1) +
+  labs(title = "Sequence Plot of Model Year",
+       x = "Observation Order",
+       y = "model year") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+year_seq2
+
+# Save the plot as a PNG
+ggsave(filename = "figures/year_seq2.png",
+  plot = year_seq2,
+  width = 5,
+  height = 3,     
+  units = "in",
+  dpi = 300)
+```
+
+The sequence plot for mpg indicates that the last portion of the dataset contains higher-mpg cars. The sequence plots for the predictor variables also reveal a noticeable pattern. Observations toward the tail end of the dataset tend to have smaller displacement, lower horsepower, and lower weight. This pattern does not automatically violate regression assumptions, but it does indicate an underlying structure in the data that should be accounted for in the regression model. Awareness of this structure is important, as it could affect the distribution of residuals, leverage points, or the functional form of predictors.
+
+A brief inspection of the data suggests that this trend corresponds to later‐model vehicles with smaller engines. This is consistent with historical context. During the late 1970s and early 1980s, the oil crisis prompted manufacturers to prioritize fuel efficiency, leading to lighter, lower-displacement, and lower-horsepower vehicles.
+```{r, results='hold'}
+# View the last 10 rows of the dataset
+tail(car, 10)
+```
+
+These patterns indicate that a temporal effect, likely captured by the variable model year, is driving systematic differences between early and later vehicles in the dataset. This temporal trend reflects historical shifts in vehicle configurations, including responses to government fuel-efficiency regulations in the 1970s. Including model year in the regression model is therefore important to account for these temporal effects and reduce potential confounding. Additionally, the sequence and scatter plots suggest that some relationships with mpg may be nonlinear, indicating that polynomial or transformed predictors may also be warranted. Ignoring these temporal or structural patterns could lead to residuals with non-random structure, potentially violating regression assumptions such as independence.
+
+Now we pivot to using scatter plots and the correlation matrix to explore possible non-linear relationships.
+
+```{r, results='hold', warnings = FALSE, message = FALSE}
+custom_smooth = function(data, mapping, ...) {
+  ggplot(data = data, mapping = mapping) +
+    geom_point(color = "darkred", alpha = 0.4, size = 1) +
+    geom_smooth(method = "loess", color = "steelblue", se = FALSE, ...)
+}
+
+car_small = car %>% 
+  dplyr::select(-car.name)  # remove categorical variables
+
+scatter_mat = ggpairs(car_small,
+                      upper = list(continuous = wrap("cor", size = 2)),
+                      lower = list(continuous = custom_smooth),
+                      diag = list(continuous = "densityDiag")) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 6),
+        axis.text.y = element_text(angle = 0, size = 6),
+        strip.text = element_text(size = 4),
+        plot.title = element_text(hjust = 0.5)) +
+  labs(title = "Scatter Plot Matrix with Correlations")
+
+scatter_mat
+
+# Save the plot as a PNG
+ggsave(filename = "figures/scatter_mat.png",
+  plot = scatter_mat,
+  width = 6,
+  height = 4,     
+  units = "in",
+  dpi = 300)
+```
+
+
+```{r}
+# Select continuous variables of interest
+vars = car_small[, c("mpg", "displacement", "horsepower", "weight", "acceleration")]
+
+# Compute correlation matrix (pairwise to handle any missing values)
+cor_matrix = cor(vars, use = "pairwise.complete.obs")
+
+# Print the matrix
+round(cor_matrix, 3)
+```
+
+
+
+We removed the categorical variable car name for this portion of the analysis because correlation coefficients and scatter plots are meaningful only for numeric predictors.
+
+Based on the correlation matrix, mpg is highly negatively associated with cylinders, displacement, horsepower, and weight, with correlations of -0.775, -0.804, -0.778, and -0.832, respectively. The relationship between mpg and model year is moderately positive, with a correlation of 0.579.
+
+The scatter plots further suggest that a purely linear model may not fully capture the relationships between mpg and some predictors. In particular, the relationships between mpg and both displacement and horsepower appear curvilinear. This indicates that polynomial transformations should be considered during model development.
+
+The correlations among the predictors themselves also reveal important patterns. Displacement and cylinders are strongly correlated (0.844), which is unsurprising given the mechanical relationship:
+$$
+\begin{aligned}
+\text{Displacement} = \text{# of cylinders} \cdot \left( \pi \cdot r^2 \cdot \text{stroke distance} \right),
+\end{aligned}
+$$
+where $r$ denotes cylinder radius and stroke distance is the range of vertical motion within the cylinder shaft.
+
+Acceleration is also correlated with both horsepower and weight (-0.697 and -0.430, respectively). This aligns with known physical principles. That is, horsepower influences engine torque, which determines the force applied at the wheels relative to the vehicle’s mass:
+$$
+\begin{aligned}
+T_\text{engine} &= \frac{\text{horsepower}}{RPM} \\
+T_\text{wheels} &= T_\text{engine} \cdot \text{Gear Ratio} \cdot \text{Differential Ratio} \\ 
+F_{\text{wheels}} &= \frac{T_\text{wheels}}{\text{Wheel radius}} \\
+\text{Acceleration} &= \frac{F_\text{wheels}}{\text{Mass of car}}.
+\end{aligned}
+$$
+This relationship can also be observed through the power-to-weight ratio. This ratio shows how much weight each horsepower needs to move, indicating acceleration potential:
+$$
+\begin{aligned}
+\text{Power-to-Weight Ratio} = \frac{\text{horsepower}}{\text{Weight}},
+\end{aligned}
+$$
+where a higher ratio indicates greater acceleration potential.
+
+We also note that horsepower is closely related to displacement, as a larger engine generally allows for more air and fuel to be combusted per cycle, producing more power. In our dataset, horsepower and displacement are highly correlated (0.898). Mechanically, horsepower is not fully determined by displacement because factors such as engine efficiency, compression ratio, and tuning also play a significant role. For regression modeling, this strong association suggests that including both horsepower and displacement may introduce multicollinearity, so care is needed when constructing the model.
+
+Several predictors in the dataset provide overlapping information. Cylinders and displacement are strongly related, while horsepower is highly correlated with displacement. Weight is strongly correlated with both displacement and horsepower, and acceleration overlaps with horsepower and weight.
+
+When considering the regression model for predicting mpg, practical concerns related to data splitting and model complexity motivate dropping cylinders and acceleration from the predictor set. After splitting the dataset, we will have roughly 198 observations available for training. Including both cylinders and acceleration adds additional coefficients to estimate, which reduces the effective number of observations per coefficient. Maintaining the guideline of at least 10 observations per estimated parameter suggests that including cylinders and acceleration could lead to overfitting and unstable coefficient estimates.
+
+To recap, cylinders and acceleration are largely captured by other predictor variables. Those variables are displacement, horsepower and weight. Including displacement, weight, horsepower, and possibly interaction terms retains the essential mechanical information, making cylinders, and acceleration largely redundant. Dropping these variables simplifies the model, improves robustness, and preserves predictive performance, while reducing multicollinearity concerns.
+
+To help mitigate potential issues with multicollinearity, we will also look at centering the predictor variables. Since model year will be retained in the model and treated as a categorical variable, we will defer the investigation of interaction terms until the predictor data types has been properly established.
+
+## Data Preprocessing
+
+Now we will leverage the insights gathered so far to pre-process the data, address missing values, and manage potential multicollinearity. We will also consider appropriate transformations, evaluate whether any outliers should be removed, and decide which variables should be treated as categorical before building our predictive model for mpg. In addition, we will split the dataset into a training set and a validation set to properly assess model performance.
+
+Given that only 14 rows out of 406 are missing values (approximately 3.5% of the dataset) and that the missingness appears random, removing these rows will have minimal impact on the analysis and is unlikely to introduce bias. Therefore, it is reasonable to delete the rows with missing values in this dataset.
+
+We now remove rows with missing values. The dataset name is changed to preserve the original data, should we need it in the future.
+
+```{r, results='hold'}
+# Remove rows with any missing values
+new_car = car %>% drop_na()
+```
+
+Next, we must ensure that all variables are stored with the correct data types.
+
+Based on our earlier findings, cylinders will not be retained in the model. We will still change its data type to categorical, but the variables itslef will not be indluded in the model. 
+
+Another variable we must discuss is model year. In our dataset, model year represents the year in which each car was manufactured. Although technically numeric, treating it as a continuous variable would imply a strictly linear effect of year on mpg. The scatterplot of mpg versus model year suggests that this assumption does not hold, a finding further supported by the boxplots for each year group.
+
+Fuel efficiency in the 1970s was influenced by tightening federal regulations, which led to discrete improvements in mpg rather than a smooth, linear increase. For example, the Corporate Average Fuel Economy (CAFE) standards introduced in 1975 began affecting vehicle design in the subsequent years, pushing manufacturers toward incremental gains in fuel efficiency. Additionally, this real-world context supports modeling model year as a categorical predictor.
+
+The summary table below illustrates this pattern. Looking at average and median mpg across the years, there is a general upward trend but the progression is uneven. For example, mpg jumps from 17.1 in 1973 to 22.7 in 1974, then drops slightly in 1975 before increasing again. Similarly, the median mpg doesn’t increase smoothly each year. 
+
+```{r, results='hold'}
+car_summary = new_car %>%
+  group_by(model.year) %>%
+  summarise(mean_mpg = mean(mpg, na.rm = TRUE),
+            median_mpg = median(mpg, na.rm = TRUE),
+            sd_mpg = sd(mpg, na.rm = TRUE),
+            n = n()) %>%
+  arrange(model.year)
+
+car_summary
+```
+
+To formally assess whether the mean fuel efficiency differs across the model years in our dataset, we perform a one-way analysis of variance (ANOVA) with mpg as the response and model year as the factor. We conduct the test at the $\alpha = 0.05$ significance level. 
+
+The hypotheses are defined as follows:
+$$
+\begin{aligned}
+H_0 &: \mu_{70} = \mu_{71} = \dots = \mu_{82} \quad \text{(all years have the same mean mpg)},\\
+H_a &: \text{At least one year has a mean mpg different from the others}.
+\end{aligned}
+$$
+```{r}
+anova_result = aov(mpg ~ factor(model.year), data = new_car)
+summary(anova_result)
+```
+
+The ANOVA results indicate an $F$-statistic of 23.80 with a corresponding $p$-value less than $2.2 \times 10^{-16}$. Since the $p$-value is well below our significance threshold, we reject the null hypothesis and conclude that there is a statistically significant difference in the mean mpg for at least one of the years.
+
+## An Exploration of Whether we can combine Model Years
+
+Again, considering model validation and the available degrees of freedom, it is important to reduce the number of levels for the variable model year. To do this, we explore ways to group the years effectively.
+
+In selecting an appropriate grouping, we aim to balance model complexity with predictive accuracy. Treating model year as a continuous variable assumes a strictly linear effect on mpg, which does not align with our initial findings. Conversely, treating each year as a separate category results in 13 levels, increasing model complexity and reduces the effective number of observations per estimated parameter.
+
+To identify a reasonable grouping, we used three separate criteria (a adjusted $R^2$ approach, an AIC-based approach, and a SBIC-based approach). Below we test several candidate groupings of model years, ranging from 2 to 13 bins, and evaluate the resulting models. Both the AIC and BIC criterion balance model fit and complexity, penalizing models with more parameters. By comparing AIC and SBIC values across the candidate groupings, we can then identify the grouping that provides the best trade-off between goodness-of-fit and parsimony. The $R_a^2$ criterion instead evaluates all possible subsets and selects the one that maximizes the proportion of variance explained relative to model complexity. This is the measure we are most concerned with.
+
+```{r}
+results = data.frame(bins = integer(),
+                     adjR2 = numeric(),
+                     AIC = numeric(),
+                     BIC = numeric())
+
+# Candidate number of bins to try
+for (k in 2:11) {
+  # Create year bins with roughly equal counts
+  temp_car = new_car %>%
+    mutate(year_bin = cut_number(model.year, n = k))
+  
+  # Fit model with year_bin as factor
+  model_k = lm(mpg ~ factor(year_bin), data = temp_car)
+  
+  # Store metrics
+  results = rbind(results, data.frame(bins = k,
+                                      adjR2 = summary(model_k)$adj.r.squared,
+                                      AIC = AIC(model_k), BIC = BIC(model_k)))
+}
+
+# Add linear and full factor models if desired
+model_linear = lm(mpg ~ model.year, data = new_car)
+model_factor = lm(mpg ~ factor(model.year), data = new_car)
+
+results = rbind(results, data.frame(bins = 1, adjR2 = summary(model_linear)$adj.r.squared,
+                                    AIC = AIC(model_linear), 
+                                    BIC = BIC(model_linear)),
+                data.frame(bins = length(unique(new_car$model.year)), 
+                           adjR2 = summary(model_factor)$adj.r.squared,
+                           AIC = AIC(model_factor), BIC = BIC(model_factor)))
+
+# Sort results by decreasing adjusted R2
+results_sorted = results[order(-results$adjR2), ]
+print(results_sorted)
+```
+
+```{r}
+which.min(results$AIC)
+which.min(results$BIC)
+```
+
+
+Both the AIC and SBIC criteria indicate that combining the 13 model years into three roughly four-year bins yields the best grouping. This approach captures the major temporal trends in fuel efficiency while avoiding overfitting that can arise from having too many factor levels. In other words, these bins preserve meaningful differences in mpg across historical periods without unnecessarily fragmenting the data.
+
+However, the $R_a^2$ suggests the opposite; retaining all 13 individual model-year levels provides the best fit.
+
+```{r}
+new_car = new_car %>%
+  mutate(year_bin = cut(model.year, breaks = seq(min(model.year), max(model.year) + 1, by = 4), 
+                        include.lowest = TRUE, right = FALSE))
+
+# Check the bins
+table(new_car$year_bin)
+
+# Fit ANOVA model
+anova_result = aov(mpg ~ year_bin, data = new_car)
+summary(anova_result)
+```
+
+The ANOVA of mpg on the resulting year bins confirms that these groups are significantly different. In other words, at least one year group has a statistically different mean value for mpg than the other two groups. 
+
+Note that the first two year bins span four years each, while the final bin spans five years.
+
+We will keep the year bins variable in the dataset, just in case we want to explore options during the model building phase. FIY any model built on year bins has a really bad adjusted $R^2$ value. 
+
+## Conditional Plots
+
+We now examine conditional plots to assess whether the relationship between the response variable and a predictor depends on the level of another variable.
+
+Conditional plots for model year are particularly important because many of our predictor variables are correlated. As a result, we anticipate that some relationships may differ across the temporal variable model year.
+
+In a conditional plot, if the regression lines corresponding to different levels of the conditioning variable intersect, this indicates that the effect of the predictor on the response varies depending on the level of the conditioning variable. In other words, such intersections suggest a potential interaction between the predictor and the conditioning variable.
+
+```{r, fig.width = 5, fig.height = 3, results='hold'}
+# Bin the conditioning variable (weight) into 2 groups
+new_car = new_car %>%
+  mutate(weight_bin = cut_number(weight, n = 2, labels = c("Low", "High")))
+
+# Plot mpg vs displacement with weight bins
+ggplot(new_car, aes(x = displacement, y = mpg, color = weight_bin)) +
+  geom_point(alpha = 0.4, size = 1) + 
+  geom_smooth(method = "lm", se = FALSE, aes(group = weight_bin), linetype = "solid") +
+  scale_color_manual(values = c("Low" = "darkred", "High" = "steelblue")) +
+  labs(title = "Conditional Effects of Displacement on MPG\n for Different Weight Groups",
+       x = "displacement",
+       y = "mpg",
+       color = "Weight Bin") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+The intersection of lines in the conditional plot indicates that the effect of displacement on mpg varies across different weight groups. In other words, increasing displacement has a different impact for lighter versus heavier cars. Including a displacement $\times$ weight interaction term in the regression model might allow us to explicitly capture this conditional effect, rather than assuming that the effect of displacement is the same for all cars.
+
+```{r, fig.width = 5, fig.height = 3, results='hold'}
+ggplot(new_car, aes(x = horsepower, y = mpg, color = weight_bin)) +
+  geom_point(alpha = 0.4, size = 1) + 
+  geom_smooth(method = "lm", se = FALSE, aes(group = weight_bin), linetype = "solid") +
+  scale_color_manual(values = c("Low" = "darkred", "High" = "steelblue")) +
+  labs(title = "Conditional Effects of Horsepower on MPG\nfor Different Weight Groups",
+       x = "horsepower",
+       y = "mpg",
+       color = "Weight Bin") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+The conditional plot of mpg versus horsepower, conditioned by weight groups, shows some divergence between the regression lines. This suggests that the effect of horsepower on mpg may differ between lighter and heavier cars, indicating a potential interaction. Mechanically, this makes sense; a given increase in horsepower will have a larger effect on mpg for a lighter car compared to a heavier car because lighter cars require less energy to accelerate. Conversely, the effect of adding weight is more pronounced in low powered vehicles.
+
+Including the horsepower $\times$ weight interaction in the regression model allows us to explicitly capture this conditional effect, rather than assuming that the effect of horsepower (or weight) is the same for all cars. This can improve predictive accuracy and better reflect the underlying physics of vehicle performance, particularly when modeling mpg for a diverse set of cars with varying weights and power levels.
+
+```{r}
+year_plot = ggplot(new_car, aes(x = horsepower, y = mpg, color = factor(model.year))) +
+  geom_point(alpha = 0.4, size = 1) + 
+  geom_smooth(method = "lm", se = FALSE, aes(group = factor(model.year)), linetype = "solid") +
+  labs(title = "Conditional Effects of Horsepower\non MPG for Different Years",
+       x = "horsepower",
+       y = "mpg",
+       color = "Year") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+year_plot
+
+# Save the plot as a PNG
+ggsave(filename = "figures/year_plot.png",
+  plot = year_plot,
+  width = 5,
+  height = 3.5,     
+  units = "in",
+  dpi = 300)
+```
+
+The conditional plot of mpg versus horsepower, grouped by model year, shows that the regression lines for different year groups intersect. This indicates that the relationship between horsepower and mpg is not entirely consistent across years. In other words, the effect of horsepower on fuel efficiency varies depending on the model year, suggesting a potential horsepower $\times$ year interaction.
+
+```{r}
+ggplot(new_car, aes(x = horsepower, y = mpg, color = year_bin)) +
+  geom_point(alpha = 0.4, size = 1) + 
+  geom_smooth(method = "lm", se = FALSE, aes(group = year_bin), linetype = "solid") +
+  labs(title = "Conditional Effects of Horsepower on MPG\nfor Different Model Year Groups",
+       x = "horsepower",
+       y = "mpg",
+       color = "Year Bin") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+The conditional plot of mpg versus horsepower, grouped by model year bins, shows that the regression lines for different year groups intersect. This indicates that the relationship between horsepower and mpg is not entirely consistent across time periods. In other words, the effect of horsepower on fuel efficiency varies depending on the model year group, suggesting a potential horsepower $\times$ year bin interaction.
+
+Mechanically, this makes sense because vehicle configurations, engine efficiency, and fuel economy standards evolved over the 1970s. For instance, a given increase in horsepower may have had a different impact on mpg in earlier years compared to later years due to improvements in engine technology, weight reduction strategies, or regulatory changes.
+
+Including a horsepower $\times$ year bin interaction term in the regression model would allow us to capture these differential effects explicitly, improving model accuracy and better reflecting the historical variation in vehicle performance. This approach also aligns with our earlier strategy of using year bins to reduce model complexity while retaining important temporal effects.
+
+```{r}
+ggplot(new_car, aes(x = weight, y = mpg, color = year_bin)) +
+  geom_point(alpha = 0.4, size = 1) + 
+  geom_smooth(method = "lm", se = FALSE, aes(group = year_bin), linetype = "solid") +
+  labs(title = "Conditional Effects of Weight on MPG\nfor Different Model Year Groups",
+       x = "weight",
+       y = "mpg",
+       color = "Year Bin") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+The conditional plot of mpg versus weight, grouped by model year bins, shows that the regression lines for different year groups mostly run in parallel but intersect slightly in the bottom-right corner of the graph, where the heaviest cars with the lowest mpg are located.
+
+This indicates that, for the majority of the data, the effect of weight on mpg is fairly consistent across years. In other words, adding weight generally reduces mpg in a similar way for most model years.
+
+However, the intersection at the extreme bottom-right suggests that for very heavy, low-mpg vehicles, the impact of additional weight may vary slightly between model years. Mechanically, this could reflect design or efficiency differences in the heaviest cars produced in different periods. For example, newer model years may have slightly better weight-to-power ratios even among heavy cars.
+
+From a modeling perspective, the main effect of weight captures the dominant relationship with mpg. The minor intersection at the extremes suggests that a weight $\times$ year bin interaction could potentially capture some additional nuance, but it is likely a small effect, mostly relevant for a limited portion of the data. Depending on how many degrees of freedom are available, we might consider including this interaction term.
+
+We now carry out the proposed changes to the dataset. 
+```{r, results='hold'}
+# Convert variables to appropriate data types
+new_car = new_car %>%
+  mutate(cylinders = as.factor(cylinders),  # not necessary any more
+         horsepower = as.numeric(horsepower),
+         weight = as.numeric(weight),
+         model.year = as.factor(model.year)) # not necessary any more
+
+# Check the result
+str(new_car)
+```
+
+Before fitting a regression model, it is important to examine the number of observations in each level of the categorical variable. This ensures that each level has enough data to produce stable and reliable estimates.
+
+We take a look at year bin.
+
+```{r, results='hold'}
+new_car %>%
+  group_by(year_bin) %>%
+  summarise(n = n())
+```
+
+There are sufficient observations for each level.
+
+We also take a look at model year.
+
+```{r, results='hold'}
+new_car %>%
+  group_by(model.year) %>%
+  summarise(n = n())
+```
+
+There are sufficient observations for each level.
+
+From the perspective of having a sufficient number of observations, it does not matter whether we use the year bin or the individual model year. From a modeling perspective, DO NOT use year bin. 
+
+To mitigate potential issues with multicollinearity, we now center the predictor variables. Yes, I am centering variables that will not even be included in the model. This is is a precaution. 
+
+```{r, results='hold'}
+# Center continuous predictor variables
+new_car_centered = new_car %>%
+  mutate(displacement_c = displacement - mean(displacement),
+         horsepower_c = horsepower - mean(horsepower),
+         weight_c = weight - mean(weight),
+         acceleration_c = acceleration - mean(acceleration))
+```
+ 
+Next, we will split the data into a training set and a validation set, aiming for a roughly 50/50 split while preserving the proportion of model year levels in each set to ensure balanced representation of this categorical variable.
+
+With 392 observations remaining, this results in approximately 198 observations for training. To balance model complexity with predictive accuracy, we previously decided to drop certain variables. These variables were cylinders and acceleration. These features are highly correlated with other predictors, such as displacement, horsepower and weight, and therefore provide overlapping information. Removing these redundant variables simplifies the model, improves interpretability, and reduces the risk of overfitting.
+
+Because these variables are excluded, their squared terms and any interaction terms involving them are also omitted.
+
+The full model under consideration therefore includes: displacement and its square, horsepower and its square, weight, the interaction between displacement and weight, the interaction between horsepower and weight, the interaction between horsepower and model year, and the model year as a categorical factor with 13 levels.
+
+
+The code below split the data into a training set and a validation set. The data is split in such a way as to grantee that the proportion of levels for model year is the same for both. 
+
+```{r, results='hold'}
+set.seed(1357)
+
+# Stratified split by model.year only
+train_index = createDataPartition(new_car_centered$model.year, p = 0.5, list = FALSE)
+
+train_data = new_car_centered[train_index, ]
+valid_data = new_car_centered[-train_index, ]
+
+cat("Proportions in full dataset:\n")
+prop.table(table(new_car_centered$model.year))
+
+# Proportions in training dataset
+cat("\nProportions in training dataset:\n")
+prop.table(table(train_data$model.year))
+
+# Proportions in validation dataset
+cat("\nProportions in validation dataset:\n")
+prop.table(table(valid_data$model.year))
+```
+
+Now we attempt to fit a regression model based on our proposed full model and the insights we have uncovered so far.
+
+```{r, results='hold'}
+# Fit a polynomial regression model
+final_model = lm(mpg ~ displacement_c + I(displacement_c^2) +
+                   horsepower_c + I(horsepower_c^2) +
+                   weight_c +
+                   displacement_c:weight_c +
+                   horsepower_c:weight_c +
+                   model.year +
+                   horsepower_c:model.year,
+                 data = train_data)
+
+summary(final_model)
+```
+
+Observe that $R_a^2 = 0.898$. We WIN! However, this model is estimating 31 different parameter values. While this is impressive, we should still follow the formal procedure using a best subset selection algorithm.
+
+```{r}
+anova(final_model)
+```
+
+PRESS## Reduction of Explanatory Variables
+
+It's time to get serious and find a model that balances being parsimonious with adequately capturing the key relationships in the data.
+
+Practically speaking, variables must be chosen carefully for analysis. Using keen insight and domain specific knowledge, we have already dropped some variables from the model (cylinders and acceleration). We seek to reduce our model further. 
+
+In particular, we aim to determine whether adding interaction terms for horsepower and each level of model year meaningfully improves the model’s ability to explain variation in the response. We will use the partial $F$-test to determine this. 
+
+For this particular partial $F$-test, our full model takes the following form:
+
+$$
+\begin{aligned}
+Y_i &= \beta_0 
++ \beta_1 x_{i,\text{dis}}
++ \beta_2 x_{i,\text{dis}}^2
++ \beta_3 x_{i,\text{hp}}
++ \beta_4 x_{i,\text{hp}}^2
++ \beta_5 x_{i,\text{wt}} \\[6pt]
+&\quad + \beta_6 \left(x_{i,\text{dis}} \cdot x_{i,\text{wt}}\right) 
++ \beta_7 \left(x_{i,\text{hp}} \cdot x_{i,\text{wt}}\right) 
++ \beta_8 \left(x_{i,\text{hp}} \cdot X_{i,\text{71}}\right) 
++ \beta_9 \left(x_{i,\text{hp}} \cdot X_{i,\text{72}}\right) \\[6pt]
+&\quad  + \beta_{10} \left(x_{i,\text{hp}} \cdot X_{i,\text{73}}\right) 
++ \beta_{11} \left(x_{i,\text{hp}} \cdot X_{i,\text{74}}\right) 
++ \beta_{12} \left(x_{i,\text{hp}} \cdot X_{i,\text{75}}\right) 
++ \beta_{13} \left(x_{i,\text{hp}} \cdot X_{i,\text{76}}\right) \\[6pt]
+&\quad + \beta_{14} \left(x_{i,\text{hp}} \cdot X_{i,\text{77}}\right) 
++ \beta_{15} \left(x_{i,\text{hp}} \cdot X_{i,\text{78}}\right) 
++ \beta_{16} \left(x_{i,\text{hp}} \cdot X_{i,\text{79}}\right) 
++ \beta_{17} \left(x_{i,\text{hp}} \cdot X_{i,\text{80}}\right) \\[6pt]
+&\quad + \beta_{18} \left(x_{i,\text{hp}} \cdot X_{i,\text{81}}\right) 
++ \beta_{19} \left(x_{i,\text{hp}} \cdot X_{i,\text{82}}\right) 
++ \beta_{20} X_{i,71}
++ \beta_{21} X_{i,72}
++ \beta_{22} X_{i,73}
++ \beta_{23} X_{i,74}\\[6pt]
+&\quad + \beta_{24} X_{i,75} 
++ \beta_{25} X_{i,76}
++ \beta_{26} X_{i,77}
++ \beta_{27} X_{i,78}
++ \beta_{28} X_{i,79} \\[6pt]
+&\quad + \beta_{29} X_{i,80}
++ \beta_{30} X_{i,81}
++ \beta_{31} X_{i,82}
++ \varepsilon_i,
+\end{aligned}
+$$
+
+and the reduced model takes the following form:
+
+$$
+\begin{aligned}
+Y_i &= \beta_0 
++ \beta_1 x_{i,\text{dis}}
++ \beta_2 x_{i,\text{dis}}^2
++ \beta_3 x_{i,\text{hp}}
++ \beta_4 x_{i,\text{hp}}^2
++ \beta_5 x_{i,\text{wt}} \\[6pt]
+&\quad + \beta_6 \left(x_{i,\text{dis}} \cdot x_{i,\text{wt}}\right) 
++ \beta_7 \left(x_{i,\text{hp}} \cdot x_{i,\text{wt}}\right)
++ \beta_{20} X_{i,71}
++ \beta_{21} X_{i,72}
++ \beta_{22} X_{i,73}
++ \beta_{23} X_{i,74}\\[6pt]
+&\quad + \beta_{24} X_{i,75} 
++ \beta_{25} X_{i,76}
++ \beta_{26} X_{i,77}
++ \beta_{27} X_{i,78}
++ \beta_{28} X_{i,79} \\[6pt]
+&\quad + \beta_{29} X_{i,80}
++ \beta_{30} X_{i,81}
++ \beta_{31} X_{i,82}
++ \varepsilon_i,
+\end{aligned}
+$$
+where
+
+$$
+\begin{aligned}
+Y_i &= \text{mpg} \\[6pt]
+x_{i,\text{dis}} &= \text{centered displacement} \\[6pt]
+x_{i,\text{hp}} &= \text{centered horsepower} \\[6pt]
+x_{i,\text{wt}} &= \text{centered weight} \\[6pt]
+X_{i,71}, X_{i,72}, \ldots, X_{i,82} &=
+\begin{cases}
+1, & \text{if model year} = j \\
+0, & \text{otherwise}
+\end{cases}
+\quad (j = 71,\ldots,82)
+\end{aligned}
+$$
+
+Note that we adopted the notation fro the textbook, where lower-case variables represent that they have been centered. 
+
+We now test whether the interaction terms between horsepower and the different levels of model year may be removed from the regression model, given that all other variables are retained. This test is conducted at the $\alpha = 0.05$ significance level.
+
+Under the null hypothesis, after accounting for all other variables in the model, the interaction terms do not improve prediction of $Y_i$ (mpg). Hence, they may be removed without loss of explanatory power. The alternative hypothesis states that at least one of these terms contributes additional predictive information and therefore should be retained.
+
+The hypotheses are
+$$
+\begin{aligned}
+H_0: &\quad \beta_8 = \dots = \beta_{19}  = 0\\
+H_A: &\quad \text{at least one of } \beta_8, \dots, \beta_{19} \text{ is nonzero}
+\end{aligned}
+$$
+
+The general linear test statistic is
+$$
+\begin{aligned}
+F^* &= \frac{SSE(\text{reduced}) - SSE(\text{full})}{df_{\text{reduced}} - df_{\text{full}}} \Big/ \frac{SSE(\text{full})}{df_{\text{full}}}.
+\end{aligned}
+$$
+
+```{r, results='hold'}
+# Fit full model
+full_model = lm(mpg ~ displacement_c + I(displacement_c^2) +
+                   horsepower_c + I(horsepower_c^2) +
+                   weight_c +
+                   displacement_c:weight_c +
+                   horsepower_c:weight_c +
+                   model.year +
+                   horsepower_c:model.year,
+                 data = train_data)
+
+# Fit reduced model
+reduced_model = lm(mpg ~ displacement_c + I(displacement_c^2) +
+                   horsepower_c + I(horsepower_c^2) +
+                   weight_c +
+                   displacement_c:weight_c +
+                   horsepower_c:weight_c +
+                   model.year,
+                 data = train_data)
+
+anova(reduced_model, full_model)
+```
+The $p$-value for this test is larger than $\alpha = 0.05$. Therefore, at the 5% significance level, we fail to reject the null hypothesis. This indicates that there is insufficient evidence to conclude that the the interaction terms for horsepower and the different levels of model year provide additional explanatory value for predicting mpg. This leaves us with a simpler baseline model.
+
+We also suspect that the quadratic terms for the displacement and horsepower predictors do not meaningfully improving the model’s ability to explain variation in the response. A partial $F$-test is again appropriate here because we are comparing nested linear models that differ only by the inclusion of specific higher-order terms.
+
+For this particular partial $F$-test, our full model takes the following form:
+
+$$
+\begin{aligned}
+Y_i &= \beta_0 
++ \beta_1 x_{i,\text{dis}}
++ \beta_2 x_{i,\text{dis}}^2
++ \beta_3 x_{i,\text{hp}}
++ \beta_4 x_{i,\text{hp}}^2
++ \beta_5 x_{i,\text{wt}} \\[6pt]
+&\quad + \beta_6 \left(x_{i,\text{dis}} \cdot x_{i,\text{wt}}\right) 
++ \beta_7 \left(x_{i,\text{hp}} \cdot x_{i,\text{wt}}\right) 
++ \beta_{8} X_{i,71}
++ \beta_{9} X_{i,72} \\[6pt]
+&\quad + \beta_{10} X_{i,73}
++ \beta_{11} X_{i,74}
++ \beta_{12} X_{i,75} 
++ \beta_{13} X_{i,76}
++ \beta_{14} X_{i,77} \\[6pt]
+&\quad + \beta_{15} X_{i,78}
++ \beta_{16} X_{i,79} 
++ \beta_{17} X_{i,80}
++ \beta_{18} X_{i,81}
++ \beta_{19} X_{i,82}
++ \varepsilon_i,
+\end{aligned}
+$$
+
+and the reduced model takes the following form:
+
+$$
+\begin{aligned}
+Y_i &= \beta_0 
++ \beta_1 x_{i,\text{dis}}
++ \beta_3 x_{i,\text{hp}}
++ \beta_5 x_{i,\text{wt}} \\[6pt]
+&\quad + \beta_6 \left(x_{i,\text{dis}} \cdot x_{i,\text{wt}}\right) 
++ \beta_7 \left(x_{i,\text{hp}} \cdot x_{i,\text{wt}}\right) 
++ \beta_{8} X_{i,71}
++ \beta_{9} X_{i,72} \\[6pt]
+&\quad + \beta_{10} X_{i,73}
++ \beta_{11} X_{i,74}
++ \beta_{12} X_{i,75} 
++ \beta_{13} X_{i,76}
++ \beta_{14} X_{i,77} \\[6pt]
+&\quad + \beta_{15} X_{i,78}
++ \beta_{16} X_{i,79} 
++ \beta_{17} X_{i,80}
++ \beta_{18} X_{i,81}
++ \beta_{19} X_{i,82}
++ \varepsilon_i.
+\end{aligned}
+$$
+
+We now test whether the quadratic terms for displacement and horsepower may be removed from the regression model, given that all other variables are retained. This test is conducted at the $\alpha = 0.05$ significance level.
+
+Under the null hypothesis, after accounting for all other variables in the model, the quadratic terms do not improve prediction of $Y_i$ (mpg). Hence, they may be removed without loss of explanatory power. The alternative hypothesis states that at least one of these terms contributes additional predictive information and therefore should be retained.
+
+The hypotheses are
+$$
+\begin{aligned}
+H_0: &\quad \beta_2 = \beta_{4}  = 0\\
+H_A: &\quad \text{at least one of } \beta_2, \beta_{4} \text{ is nonzero}
+\end{aligned}
+$$
+
+The general linear test statistic is
+$$
+\begin{aligned}
+F^* &= \frac{SSE(\text{reduced}) - SSE(\text{full})}{df_{\text{reduced}} - df_{\text{full}}} \Big/ \frac{SSE(\text{full})}{df_{\text{full}}}.
+\end{aligned}
+$$
+
+```{r, results='hold'}
+# Fit full model
+full_model = lm(mpg ~ displacement_c + I(displacement_c^2) +
+                   horsepower_c + I(horsepower_c^2) +
+                   weight_c +
+                   displacement_c:weight_c +
+                   horsepower_c:weight_c +
+                   model.year,
+                 data = train_data)
+
+# Fit reduced model
+reduced_model = lm(mpg ~ displacement_c + 
+                   horsepower_c +
+                   weight_c +
+                   displacement_c:weight_c +
+                   horsepower_c:weight_c +
+                   model.year,
+                 data = train_data)
+
+anova(reduced_model, full_model)
+```
+
+The $p$-value for this test is larger than $\alpha = 0.05$. Therefore, at the 5% significance level, we fail to reject the null hypothesis. This indicates that there is insufficient evidence to conclude that the the quadratic terms for displacement and horsepower provide additional explanatory value for predicting mpg. This again leaves us with a simpler baseline model.
+
+Let's check how well our current model performs.
+
+```{r}
+current_model = lm(mpg ~ displacement_c + 
+                   horsepower_c +
+                   weight_c +
+                   displacement_c:weight_c +
+                   horsepower_c:weight_c +
+                   model.year,
+                 data = train_data)
+summary(current_model)
+```
+
+The adjusted $R^2$ value only decreased slightly. We note that the centered displacement term is not significant. In a similar vein the same holds true about the interaction term displacement $\times$ weight. This makes logical sense. Recall that displacement and weight are highly correlated (0.932). More than likely the displacement term (and by extension the displacement $\times$ weight interaction term) is capturing redundant information already present in the model with weight included. 
+
+The next logical step is to formally test whether the displacement and its interaction term with weight contribute meaningfully to the model. We therefore target the displacement and the displacement $\times$ weight terms for removal using a partial $F$-test. This approach allows us to determine whether excluding the interaction significantly worsens model fit; if it does not, removing these terms will reduce multicollinearity and improve the stability of the model estimates.
+
+For this particular partial $F$-test, our full model takes the following form:
+
+$$
+\begin{aligned}
+Y_i &= \beta_0 
++ \beta_1 x_{i,\text{dis}}
++ \beta_2 x_{i,\text{hp}}
++ \beta_3 x_{i,\text{wt}} \\[6pt]
+&\quad + \beta_4 \left(x_{i,\text{dis}} \cdot x_{i,\text{wt}}\right) 
++ \beta_5 \left(x_{i,\text{hp}} \cdot x_{i,\text{wt}}\right) 
++ \beta_{6} X_{i,71}
++ \beta_{7} X_{i,72} \\[6pt]
+&\quad + \beta_{8} X_{i,73}
++ \beta_{9} X_{i,74}
++ \beta_{10} X_{i,75} 
++ \beta_{11} X_{i,76}
++ \beta_{12} X_{i,77} \\[6pt]
+&\quad + \beta_{13} X_{i,78}
++ \beta_{14} X_{i,79} 
++ \beta_{15} X_{i,80}
++ \beta_{16} X_{i,81}
++ \beta_{17} X_{i,82}
++ \varepsilon_i,
+\end{aligned}
+$$
+
+and the reduced model takes the following form:
+
+$$
+\begin{aligned}
+Y_i &= \beta_0 
++ \beta_2 x_{i,\text{hp}}
++ \beta_3 x_{i,\text{wt}} 
++ \beta_5 \left(x_{i,\text{hp}} \cdot x_{i,\text{wt}}\right) 
++ \beta_{6} X_{i,71}
++ \beta_{7} X_{i,72} \\[6pt]
+&\quad + \beta_{8} X_{i,73}
++ \beta_{9} X_{i,74}
++ \beta_{10} X_{i,75} 
++ \beta_{11} X_{i,76}
++ \beta_{12} X_{i,77} \\[6pt]
+&\quad + \beta_{13} X_{i,78}
++ \beta_{14} X_{i,79} 
++ \beta_{15} X_{i,80}
++ \beta_{16} X_{i,81}
++ \beta_{17} X_{i,82}
++ \varepsilon_i.
+\end{aligned}
+$$
+
+We now test whether displacement and the displacement $\times$ weight interaction term may be removed from the regression model, given that all other variables are retained. This test is conducted at the $\alpha = 0.05$ significance level.
+
+Under the null hypothesis, after accounting for all other variables in the model, the displacement and the displacement $\times$ weight interaction terms do not improve prediction of $Y_i$ (mpg). Hence, they may be removed without loss of explanatory power. The alternative hypothesis states that the interaction term does contribute additional predictive information and therefore should be retained.
+
+The hypotheses are
+
+$$
+\begin{aligned}
+H_0: &\quad \beta_1 = \beta_4  = 0\\
+H_A: &\quad \text{at least one of } \beta_1, \beta_{4} \text{ is nonzero}
+\end{aligned}
+$$
+
+The general linear test statistic is
+
+$$
+\begin{aligned}
+F^* &= \frac{SSE(\text{reduced}) - SSE(\text{full})}{df_{\text{reduced}} - df_{\text{full}}} \Big/ \frac{SSE(\text{full})}{df_{\text{full}}}.
+\end{aligned}
+$$
+
+```{r, results='hold'}
+# Fit full model
+full_model = lm(mpg ~ displacement_c + 
+                   horsepower_c +
+                   weight_c +
+                   displacement_c:weight_c +
+                   horsepower_c:weight_c +
+                   model.year,
+                 data = train_data)
+
+# Fit reduced model
+reduced_model = lm(mpg ~ horsepower_c +
+                     weight_c +
+                     horsepower_c:weight_c +
+                   model.year,
+                 data = train_data)
+
+anova(reduced_model, full_model)
+```
+The $p$-value for this test is larger than $\alpha = 0.05$. Therefore, at the 5% significance level, we fail to reject the null hypothesis. This indicates that there is insufficient evidence to conclude that the the displacement and the displacement $\times$ weight interaction terms provide additional explanatory value for predicting mpg. This leaves us with a simpler baseline model.
+
+```{r}
+current_model = lm(mpg ~ horsepower_c +
+                   weight_c +
+                   horsepower_c:weight_c +
+                   model.year,
+                 data = train_data)
+vif(current_model)
+```
+These VIF values are reasonable and fall within a range that indicates acceptable levels of multicollinearity. 
+
+To assess whether we have enough observations for reliable estimation for our current model, we calculate the number of observations per predictor degree of freedom:
+$$
+\begin{aligned}
+\frac{\text{Number of training observations}}{\text{Number of predictor degrees of freedom}} = \frac{198}{15} \approx 13.2
+\end{aligned}
+$$
+This indicates that there are roughly 13 observations available for each predictor df, satisfying the commonly cited rule of thumb in linear regression. Meeting this guideline suggests that we have sufficient data to estimate model coefficients reliably and reduces the risk of overfitting. Consequently, we can proceed with confidence in both coefficient estimation and predictive performance.
+
+Calculating the degrees of freedom for each predictor term:
+$$
+\begin{aligned}
+\text{Horsepower (continuous)} & : 1 \text{ df} \\
+\text{Weight (continuous)} & : 1 \text{ df} \\
+\text{Horsepower} \times \text{Weight (interaction)} & : 1 \text{ df} \\
+\text{Model Year (13 levels)} & : 13 - 1 = 12 \text{ df} \\
+\text{Total predictor df} & = 1 + 1 + 1 + 12  = 15 \text{ df} \\[1mm]
+\text{Training observations} & : n = 196 \\[1mm]
+\text{Residual df} & = n - \text{predictor df} - 1 = 196 - 15 - 1 = 180
+\end{aligned}
+$$
+
+
+Let's check the adjusted $R^2$ value for the model we have thus far. 
+
+```{r, results='hold'}
+current_model = lm(mpg ~ horsepower_c +
+                   weight_c +
+                   horsepower_c:weight_c +
+                   model.year,
+                 data = train_data)
+
+summary(current_model)
+```
+
+Observe that $R_a^2 = 0.897$. Not bad! We still have 15 parameter values that we are estimating. Furthermore, we see that some of the predictor variables are not significant. These predictors are indicator variables. 
+
+Note that there is no coefficient for model.year70 in the summary. This means that all other year coefficients (model.year71, model.year72, ...) are interpreted relative to year 70. For example, model.year71 = 0.5245 means that, holding other predictors constant, the expected mpg for year 71 is 0.5245 units larger than year 70 (although this is not statistically significant here).
+
+```{r}
+anova(current_model)
+```
+
+Based on the ANOVA output above, all main effects and the interaction term are highly significant. Additionally, the MSE is small compared to the effects, suggesting the model fits the data reasonably well. This means that, on average, our predictions deviate from the true mpg by $\approx$ 2.53 mpg.
+
+To see if we can simplify our model further, we’ll try the best subset approach using the $R_{a}^2$ Criterion. 
+
+This is the biggest change to the model set up. If the model contains an interaction term between two variables, it also needs the main effects. This code filters the models and only picks those that contains both. 
+
+```{r, results='hold'}
+# Fit all possible subsets
+best_subsets = regsubsets(mpg ~ horsepower_c +
+                            weight_c +
+                            horsepower_c:weight_c +
+                            model.year,  
+                          data = train_data,
+                          nbest = 40,  # takes the top 40 models from each model size
+                          nvmax = 8, # limits the number of predictors in the model
+                          method = "exhaustive")
+
+# Summary of best subsets
+summary_best = summary(best_subsets)
+all_models = data.frame(Adjusted_R2 = summary_best$adjr2, summary_best$which)
+
+# Name of the interaction column
+int_col = "horsepower_c.weight_c"
+
+# Filter the models to enforce hierarchy
+all_models_filtered = all_models %>%
+  filter(!.data[[int_col]] | (horsepower_c & weight_c)) %>%
+  arrange(desc(Adjusted_R2))
+
+# View the top 5 models
+all_models_filtered[1:5, ]
+```
+
+The five best subsets of predictor variables for a regression model, based on the $R_{a}^2$ criterion, are:  
+
+- ($x_{i,\text{hp}}, x_{i,\text{wt}}, X_{i,73}, X_{i,79}, X_{i,80}, X_{i,81}, X_{i,82}, x_{i,\text{hp}} \cdot x_{i,\text{wt}}$), 
+- ($x_{i,\text{hp}}, x_{i,\text{wt}}, X_{i,78}, X_{i,79}, X_{i,80}, X_{i,81}, X_{i,82}, x_{i,\text{hp}} \cdot x_{i,\text{wt}}$),
+- ($x_{i,\text{hp}}, x_{i,\text{wt}}, X_{i,77}, X_{i,79}, X_{i,80}, X_{i,81}, X_{i,82}, x_{i,\text{hp}} \cdot x_{i,\text{wt}}$),
+- ($x_{i,\text{hp}}, x_{i,\text{wt}}, X_{i,72}, X_{i,79}, X_{i,80}, X_{i,81}, X_{i,82}, x_{i,\text{hp}} \cdot x_{i,\text{wt}}$), and 
+- ($x_{i,\text{hp}}, x_{i,\text{wt}}, X_{i,76}, X_{i,79}, X_{i,80}, X_{i,81}, X_{i,82}, x_{i,\text{hp}} \cdot x_{i,\text{wt}}$).
+
+These results indicate that the model consistently selects the most recent model years (79-82) and the interaction term between horsepower and weight. This supports retaining these key predictors while potentially dropping less informative year levels.
+
+In performing the best subsets analysis with the $R_{a}^2$ criterion, the choice of reference level for the model year factor does not affect which predictors are selected, because $R_{a}^2$ depends on the overall fit of the model rather than the interpretation of individual coefficients. However, setting a consistent reference level (e.g., year 70) can improve interpretability of the coefficient estimates without altering the predictive performance or subset selection results. 
+
+The corresponding $R_{a}^2$ values for the top models are relatively close, suggesting that this metric alone may not clearly distinguish the best model. Therefore, additional model selection criteria are useful. Other commonly used criteria include Mallows' $C_p$, the Akaike Information Criterion ($AIC_p$), Schwarz’ Bayesian Criterion ($SBC_p$), and the Prediction Sum of Squares Criterion ($PRESS_p$).
+
+Mallows' $C_p$ criterion evaluates both bias and variance, with models having $C_p$ values close to the number of predictors $p$ preferred. AIC and SBIC penalize model complexity while rewarding good in-sample fit, favoring lower values. The PRESS criterion is particularly useful here because it directly measures predictive accuracy. It estimates how well a model will predict unseen data. Smaller PRESS values indicate better out-of-sample prediction, which aligns closely with our primary goal of building a predictive model.
+
+By using these criteria in combination with $R_{a}^2$, we can identify models that are both parsimonious and likely to perform well on new data. In particular, PRESS will serve as our key metric for predictive reliability.
+
+We first create a function to calculate PRESS. The function extracts the model matrix, computes the hat matrix, and then obtains the diagonal elements. It calculates ordinary residuals, the sum of squared errors (SSE) for the training data, and PRESS as the sum of squared predicted residuals. The SSE reflects in-sample fit, while PRESS estimates predictive performance.
+
+```{r, results='hold'}
+calc_PRESS = function(model) {
+  X = model.matrix(model)       # model matrix
+  H = X %*% solve(t(X) %*% X) %*% t(X)  # hat matrix
+  h = diag(H)                   
+  res = residuals(model)        # ordinary residuals
+  SSE = sum(res^2)
+  PRESS = sum((res / (1 - h))^2)
+  return(list(SSE = SSE, PRESS = PRESS))
+}
+```
+
+Next, we calculate PRESS for each of the best subset models identified by the $R_{a}^2$ criterion. I also change the code here to only calculate the PRESS value for the best subsets identified by the $R_{a}^2$ Criterion. 
+
+```{r, results='hold'}
+# Define the best subsets explicitly
+best_subsets = list(
+  list(years = c(73, 79, 80, 81, 82), predictors = c("horsepower_c", "weight_c", "horsepower_c:weight_c")),
+  list(years = c(78, 79, 80, 81, 82), predictors = c("horsepower_c", "weight_c", "horsepower_c:weight_c")),
+  list(years = c(77, 79, 80, 81, 82), predictors = c("horsepower_c", "weight_c", "horsepower_c:weight_c")),
+  list(years = c(72, 79, 80, 81, 82), predictors = c("horsepower_c", "weight_c", "horsepower_c:weight_c")),
+  list(years = c(76, 79, 80, 81, 82), predictors = c("horsepower_c", "weight_c", "horsepower_c:weight_c")))
+
+# Initialize results data frame
+press_results = data.frame(subset_id = integer(),
+                           years_included = character(),
+                           predictors = character(),
+                           SSE = numeric(),
+                           PRESS = numeric(),
+                           percent_diff = numeric(),
+                           AIC = numeric(),
+                           SBIC = numeric())
+
+for (i in seq_along(best_subsets)) {
+  
+  subset_info = best_subsets[[i]]
+  years = subset_info$years
+  preds = subset_info$predictors
+  
+  # Create factor for this subset
+  train_data_sub = train_data %>%
+    mutate(model_year_sub = ifelse(model.year %in% years, as.character(model.year), "other"))
+  
+  # Set reference level as the first year in the subset
+  train_data_sub$model_year_sub = factor(train_data_sub$model_year_sub,
+                                         levels = c(as.character(years[1]),
+                                                    sort(setdiff(unique(train_data_sub$model_year_sub), as.character(years[1])))))
+  
+  # Build formula dynamically
+  formula_str = paste("mpg ~", paste(c(preds, "model_year_sub"), collapse = " + "))
+  mod = lm(as.formula(formula_str), data = train_data_sub)
+  
+  # Calculate SSE and PRESS
+  press_vals = calc_PRESS(mod)
+  percent_diff = 100 * (press_vals$PRESS - press_vals$SSE) / press_vals$SSE
+  
+  aic_val  = AIC(mod)
+  sbic_val = BIC(mod)
+  
+  press_results = rbind(press_results,
+                         data.frame(subset_id = i,
+                                    years_included = paste(years, collapse = ", "),
+                                    predictors = paste(preds, collapse = ", "),
+                                    SSE = press_vals$SSE,
+                                    PRESS = press_vals$PRESS,
+                                    percent_diff = percent_diff,
+                                    AIC = aic_val,
+                                    SBIC = sbic_val))
+}
+
+# Sort by percent difference
+press_results_sorted = press_results %>% arrange(percent_diff)
+press_results_sorted
+```
+
+The PRESS values indicate that the model including horsepower, weight, the interaction between horsepower and weight, and the years 77, 79, 80, 81, and 82 yields the lowest percent difference between PRESS and SSE (11.8%). However, we observe that the other candidate models perform nearly equivalently. Considering both predictive reliability and explanatory power (as measured by adjusted $R^2$), selecting the fourth model provides a reasonable balance between model simplicity and predictive performance. This is promarily motivated by trying to get a better $R_a^2$ value.
+
+Below is a quick sanity check.
+
+The code below is intended to fit the best subsets regression model we identified above (aka, a model with horsepower, weight, their interaction term, and model years 73, 79, 80, 81, and 82 with model year 70 treated as the reference category) to the training dataset. If all goes well the $R_a^2$ value should match that of the regsubsets procedure above. 
+
+```{r, results='hold'}
+# Create a factor for just the years of interest, with 70 as reference
+train_data_sub = train_data %>%
+  mutate(model_year_sub = ifelse(model.year %in% c(73, 79, 80, 81, 82),
+                                 as.character(model.year), "70")) # 70 = reference
+
+train_data_sub$model_year_sub = factor(train_data_sub$model_year_sub,
+                                       levels = c("70","73","79","80","81","82"))
+
+# Fit the best subset model
+final_model = lm(mpg ~ horsepower_c +
+                   weight_c +
+                   horsepower_c:weight_c +
+                   model_year_sub,
+                 data = train_data_sub)
+
+summary(final_model)
+```
+
+It matches! YAY! And all predictor variables are all significant!!!
+
+## Diagnositics of the Fitted Regression
+
+The standard assumptions of simple linear regression are:
+- linearity, 
+- constant error variance, 
+- independence of observations, and 
+- approximate normality of residuals.
+
+```{r, results='hold'}
+# Fit the best subset model
+best_subset_model = lm(mpg ~ horsepower_c +
+                         weight_c +
+                         horsepower_c:weight_c +
+                         model_year_sub,
+                       data = train_data_sub)
+
+# Create a data frame with residuals and observation sequence
+resid_df = train_data_sub %>%
+  mutate(obs_seq = 1:length(best_subset_model$residuals),
+         residuals = best_subset_model$residuals,
+         fitted = fitted(best_subset_model),
+         stud_resid = rstudent(best_subset_model))
+```
+
+
+Independence, is by far the most important assumption to check.
+
+```{r, fig.width = 5, fig.height = 3, results='hold'}
+# Plot residuals vs observation sequence
+resid_vs_seq = ggplot(resid_df, aes(x = obs_seq, y = residuals)) +
+  geom_point(alpha = 0.3, color = "darkred") +
+  geom_smooth(method = "loess", color = "steelblue", se = FALSE, size = 1) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(title = "Residuals vs Observation Sequence",
+       x = "Observation Sequence",
+       y = "Residuals") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+resid_vs_seq
+
+# Save the plot as a PNG
+ggsave(filename = "figures/resid_vs_seq.png",
+  plot = resid_vs_seq,
+  width = 5,
+  height = 3,     
+  units = "in",
+  dpi = 300)
+```
+
+This plot allows us to check for serial correlation. The residuals appear to be randomly scattered without visible trends or cycles, indicating that first-order autocorrelation is unlikely to be present. In other words, there is no visual evidence of time-based correlation or dependence in the errors. 
+
+```{r, fig.width = 5, fig.height = 3, results='hold'}
+# Plot residuals vs observation sequence
+resid_vs_year = ggplot(resid_df, aes(x = model_year_sub, y = residuals)) +
+  geom_point(alpha = 0.3, color = "darkred") +
+  geom_smooth(method = "loess", color = "steelblue", se = FALSE, size = 1) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(title = "Residuals vs Model Years",
+       x = "years",
+       y = "Residuals") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+resid_vs_year
+
+# Save the plot as a PNG
+ggsave(filename = "figures/resid_vs_year.png",
+  plot = resid_vs_year,
+  width = 5,
+  height = 3,     
+  units = "in",
+  dpi = 300)
+```
+
+The plot aboeve of residuals against model years supports the assumption of independence of residuals, which is a key requirement for valid statistical inference in linear regression.
+
+To formally evaluate first-order autocorrelation, we conduct a Durbin–Watson test. The test is performed at the $\alpha = 0.05$ significance level. The null hypothesis assumes that the residuals are uncorrelated ($\rho = 0$), while the alternative hypothesis allows for the presence of first-order autocorrelation ($\rho \neq 0$). Formally, we have
+
+$$
+\begin{aligned}
+H_{0}: &\quad \rho = 0 \\
+H_{A}: &\quad \rho \neq 0
+\end{aligned}
+$$
+
+```{r, results='hold'}
+dw_result = dwtest(best_subset_model, alternative = "two.sided")  
+
+dw_result
+```
+Based on the resulting $p$-value, there is insufficient evidence to reject the null hypothesis at the $\alpha = 0.05$ level. This indicates that there is no significant first-order autocorrelation in the residuals, which is consistent with the residuals versus observation sequence plot. Overall, this supports the assumption that the errors in our simple linear regression model are independent, and no temporal or cyclical structure remains unaccounted for in the data.
+
+Next, we examine the residuals versus fitted values plot.
+
+```{r, fig.width = 5, fig.height = 3, results='hold'}
+# Residuals vs Predictor
+resid_vs_mpg = ggplot(resid_df, aes(x = fitted, y = residuals)) +
+  geom_point(alpha = 0.3, color = "darkred") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  geom_smooth(method = "loess", se = FALSE, color = "steelblue") +
+  labs(title = "Residuals vs Fitted Values",
+       x = "Fitted Values",
+       y = "Residuals") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+resid_vs_mpg
+
+# Save the plot as a PNG
+ggsave(filename = "figures/resid_vs_mpg.png",
+  plot = resid_vs_mpg,
+  width = 5,
+  height = 3,     
+  units = "in",
+  dpi = 300)
+```
+
+```{r, fig.width = 5, fig.height = 3, results='hold'}
+# Studentized residuals vs Fitted Values
+stud_resid_plot = ggplot(resid_df, aes(x = fitted, y = stud_resid)) +
+  geom_point(alpha = 0.3, color = "darkred") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  geom_smooth(method = "loess", se = FALSE, color = "steelblue") +
+  labs(title = "Studentized Residuals vs Fitted Values",
+       x = "Fitted Values",
+       y = "Studentized Residuals") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+stud_resid_plot
+
+# Save the plot as a PNG
+ggsave(filename = "figures/stud_resid_vs_fitted.png",
+       plot = stud_resid_plot,
+       width = 5,
+       height = 3,
+       units = "in",
+       dpi = 300)
+```
+
+
+The residuals versus fitted values plot shows residuals randomly scattered around zero, with no obvious systematic patterns or curvature. The relatively flat LOESS curve supports the assumption of linearity. There is a slight hint of a funnel shape in the residuals, suggesting some heteroscedasticity. Overall, the plot indicates that the linear model is reasonably appropriate for the data. However, the potential heteroscedasticity motivates considering a transformation of the response variable, mpg, to better satisfy the constant variance assumption.
+
+A formal $F$-test for lack of fit is typically used to assess whether a linear regression model adequately captures the relationship between a predictor and the response variable. The test requires replicated observations for each combination of predictors, which allow the total residual variation to be partitioned into two components:
+
+- Pure error: variation among observations at the same predictor value, and
+- Lack-of-fit: variation due to the model failing to capture the true mean relationship.
+
+However, in our dataset, we have multiple continuous predictors and interaction terms, so the traditional lack-of-fit $F$-test is not applicable.
+
+There also appears to be few extreme observations, which could be influential points. Therefore, it is necessary to perform outlier diagnostics (e.g., studentized deleted residuals) to identify possible outliers.
+
+To further assess the constant variance (homoscedasticity) assumption of the regression model, we employ the Brown–Forsythe test, a robust modification of Levene’s test that uses deviations from the median rather than the mean and does not rely on the normality of the residuals. The test evaluates whether the variability of the residuals differs across groups. Significant differences in residual variability suggest that the assumption of constant variance may be violated.
+
+In our dataset, observations are naturally grouped by model year. If the residual variance changes across these year groups, the test will detect it as a statistically significant difference.
+
+Using a significance level of $\alpha = 0.05$, the hypotheses for the Brown–Forsythe test are:
+$$
+\begin{aligned}
+H_0: & \quad \sigma_{73}^2 = \sigma_{79}^2 = \sigma_{80}^2 = \sigma_{81}^2 = \sigma_{82}^2 \quad \text{Residual variance is equal between groups (homoscedasticity)}\\
+H_A: & \quad \sigma_{i}^2 \neq \sigma_{j}^2  \quad \text{for some } i \neq j \quad \text{Residual variance differs between groups (heteroscedasticity)}
+\end{aligned}
+$$
+
+```{r, results='hold'}
+# Brown–Forsythe test (Levene test using median)
+bf_test = leveneTest(residuals(best_subset_model) ~ model_year_sub, 
+                     data = train_data_sub, 
+                     center = median)
+
+bf_test
+```
+
+The Brown–Forsythe test returned a $p$-value smaller than 0.05. Therefore, we reject the null hypothesis, and there is statistical evidence to suggest that the error variance differs between year groups. This supports the our move to transform the response variable, mpg. 
+
+Finally, we examine the Normal QQ plot.
+
+```{r, fig.width = 5, fig.height = 3, results='hold'}
+# Normal Q-Q Plot of Residuals
+resid_qq = ggplot(resid_df, aes(sample = residuals)) +
+  stat_qq(alpha = 0.3, color = "darkred") +
+  stat_qq_line(color = "steelblue") +
+  labs(title = "Normal Q-Q Plot of Residuals",
+       x = "Expected",
+       y = "Residuals") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+resid_qq
+
+# Save the plot as a PNG
+ggsave(filename = "figures/resid_qq.png",
+  plot = resid_qq,
+  width = 5,
+  height = 3,     
+  units = "in",
+  dpi = 300)
+```
+
+If the residuals were approximately normally distributed, we would expect the points to lie close to the reference line. However, we note that the points in both the upper and lower tails bend away from the line slightly, indicating heavier tails than those expected under a normal distribution. This suggests that extreme residual values occur more frequently than the normal model assumes. While the central portion of the distribution roughly follows the reference line, the pronounced tail spread implies that the assumption of normally distributed errors may not be entirely appropriate for this model. This observation does not necessarily invalidate the regression, but it does caution against inference procedures that strongly depend on strict normality of residuals. 
+
+To formally assess the normality of the residuals, we now apply the Shapiro-Wilk test. We conduct the test at the significance level $\alpha = 0.05$. The Shapiro-Wilk test formally evaluates whether the residuals are normally distributed. The hypotheses for the test are:
+
+$$
+\begin{aligned}
+H_{0}: & \quad \text{The residuals are normally distributed} \\
+H_{A}: & \quad \text{The residuals are not normally distributed}
+\end{aligned}
+$$
+
+```{r, results='hold'}
+# Shapiro-Wilk test for normality
+shapiro_test = shapiro.test(resid_df$residuals)
+
+# Print results
+shapiro_test
+```
+
+Since the $p$-value is smaller than 0.05, we reject the null hypothesis. This indicates that the residuals deviate from normality.
+
+Given this, it may be appropriate to consider a transformation of the response variable, such as a Box-Cox power transformation, to better satisfy the assumptions of linear regression. This could improve the approximation of normality in the residuals and enhance the reliability of inference from the model.
+
+## Testing for Outliers
+
+We identify potentially outlying response values $Y_i$ as those observations whose studentized deleted residuals are large in absolute value. To formally test whether the observation with the largest absolute studentized deleted residual is an outlier, we can use the Bonferroni procedure, which adjusts for the fact that we are simultaneously testing all $n$ observations.
+
+If the regression model is appropriate and the residuals satisfy the assumptions, each studentized deleted residual follows a $t$ distribution with $n-p-1$ degrees of freedom, where $p$ is the number of predictors. Since we do not know in advance which case will have the largest residual, we account for the family-wise error by considering all $n$ tests. The critical value for testing at significance level $\alpha$ is $t_{\frac{1-\alpha}{2n}; n-p-1}$.
+
+An observation whose absolute studentized deleted residual exceeds this threshold can be considered an outlier at the $\alpha$ significance level, after adjusting for multiple comparisons.
+
+We shall use the Bonferroni simultaneous test procedure with a family significance level of $\alpha = 0.05$. 
+
+```{r, results='hold'}
+# Number of observations and predictors
+n = nrow(resid_df)
+p = length(coef(best_subset_model))
+
+# Compute studentized deleted residuals
+stud_del_resid = rstudent(best_subset_model)
+
+# Bonferroni critical value
+alpha = 0.05
+t_crit = qt(1 - alpha / (2 * n), df = n - p - 1)
+
+# Identify potential outliers
+outliers = which(abs(stud_del_resid) > t_crit)
+
+# Display results
+data.frame(Observation = outliers,
+           StudDeletedResid = stud_del_resid[outliers],
+           BonferroniThreshold = t_crit)
+```
+
+In our analysis, observation 192 has a studentized deleted residual of 4.4, which exceeds the Bonferroni threshold of 3.73. Therefore, it is identified as an outlier. 
+
+```{r, results='hold'}
+resid_df[192, ]
+```
+
+We can use the plot below to verify that this is an outlier. 
+
+```{r, fig.width = 5, fig.height = 3, results='hold'}
+# Number of observations and predictors
+n = nrow(resid_df)
+p = length(coef(best_subset_model))
+
+# Bonferroni critical value
+alpha = 0.05
+t_crit = qt(1 - alpha / (2 * n), df = n - p - 1)
+
+# Plot studentized deleted residuals with Bonferroni threshold
+outlier_plot = ggplot(resid_df, aes(x = 1:nrow(resid_df), y = stud_del_resid)) +
+  geom_point(alpha = 0.5, color = "darkred") +
+  geom_hline(yintercept = c(-t_crit, 0, t_crit), 
+             linetype = c("dashed", "solid", "dashed"), 
+             color = c("red", "black", "red")) +
+  labs(title = "Studentized Deleted Residuals\nwith Bonferroni Threshold",
+       x = "Observation Index",
+       y = "Studentized Deleted Residual") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+outlier_plot
+
+# Save the plot as a PNG
+ggsave(filename = "figures/outlier_plot.png",
+  plot = outlier_plot,
+  width = 5,
+  height = 3,     
+  units = "in",
+  dpi = 300)
+```
+
+We can check our potential outliers for leverage in the model using Cook's Distance
+
+```{r include = TRUE}
+#Calculate Cook's Distance for all of our data then pull out the index of the observation of interest.
+cooks_d=cooks.distance(best_subset_model)
+index=192
+cooksd_sub=cooks_d[index]
+print(cooksd_sub)
+
+#Calculate the F value to be used as the comparator
+qf(p = 0.5, df1 = p, df2 = n-p)
+
+#Set up this median F-value as the comparator for the Cook's distance values we calculated for the indices of interest.
+Is_Influential= ifelse(abs(cooksd_sub) > qf(p = 0.5, df1 = p, df2 = n-p), "Yes", "No")
+print(Is_Influential)
+```
+
+The code below is to simply to double check values, I did not modify Megan's code, aside from changing the index. 
+
+```{r}
+# Observations of interest (Bonferroni outliers)
+cases_of_interest = c(192)
+
+# Compute diagnostics
+dffits_vals = dffits(best_subset_model)
+dfbetas_vals = dfbetas(best_subset_model)
+cooks_vals = cooks.distance(best_subset_model)
+
+# Initialize table
+influence_table = data.frame(Observation = cases_of_interest,
+                             DFFITS = dffits_vals[cases_of_interest],
+                             CooksD= cooks_vals[cases_of_interest])
+
+# Add DFBETAS for each coefficient
+coeff_names = names(coef(best_subset_model))
+for (j in seq_along(coeff_names)) {
+  influence_table[[paste0("DFBETA_", coeff_names[j])]] = 
+    dfbetas_vals[cases_of_interest, j]
+}
+
+# Round for readability
+round(influence_table, 4)
+```
+
+```{r, fig.width = 5, fig.height = 3, results='hold'}
+# Compute Cook's distance
+cooks_values = cooks.distance(best_subset_model)
+
+# Build data frame for ggplot
+df_cook = data.frame(Observation = 1:length(cooks_values),
+                     CooksD = cooks_values)
+
+cook_plot = ggplot(df_cook, aes(x = Observation, y = CooksD)) +
+  geom_line() +
+  geom_point() +
+  geom_hline(yintercept = 0.44, color = "red", linetype = "dashed") +
+  geom_hline(yintercept = 1, color = "blue", linetype = "dotted") +
+  labs(title = "Index Plot of Cook's Distance",
+       x = "Observation Index",
+       y = "Cook's Distance") +
+  coord_cartesian(ylim = c(0, 0.5)) +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+cook_plot
+
+# Save the plot as a PNG
+ggsave(filename = "figures/cook_plot.png",
+  plot = cook_plot,
+  width = 5,
+  height = 3,     
+  units = "in",
+  dpi = 300)
+```
+
+
+
+
+
+For large datasets, an absolute DFFITS value greater than $2 \sqrt{\frac{p}{n}}$ is typically considered influential.
+```{r}
+2*sqrt(p/n)
+```
+
+In this dataset, observations 192 has an absolute DFFITS value greater than $2 \sqrt{\frac{p}{n}}$. This observation is considered influential based on DFFITS.
+
+For interpreting Cook's Distance measure, it is useful to relate $D_i$ to the $F_{p, n-p}$ distribution and ascertain the corresponding percentile value. If the percentile value is less than about 10 or 20 percent, the $i$th case has little apparent influence on the fitted values. If, on the other hand, the percentile value is near 50 percent or more, the fitted values obtained with and without the $i$th case should be considered to differ substantially, implying that the $i$th case has a major influence on the fit of the regression function. 
+
+For our model ($p = 9, n = 198$), this means we have
+
+$$
+\begin{aligned}
+F_{0.1; 9, 198} &= 0.4597 \\
+F_{0.2; 9, 198} &= 0.4597 \\
+F_{0.5; 9, 198} &= 0.9303. 
+\end{aligned}
+$$
+
+```{r, results='hold'}
+round(qf(0.1, p, n - p), 4)
+round(qf(0.2, p, n - p), 4)
+round(qf(0.5, p, n - p), 4)
+```
+
+Thus, a Cook's distance greater than 0.9303 would indicate influence. In our dataset, the largest Cook's distance is observation 192 (0.1067). This does not meet the criteria to be considered influential based on Cook’s distance. And my answers match Megan's. 
+
+For DFBETAS, an absolute value exceeding $\frac{2}{\sqrt{n}}$ is often used to flag influential observations for large datasets. 
+
+```{r}
+round(2 / sqrt(n), 4)
+```
+
+In this dataset, several of the DFBETAS exceed 0.1421 (horsepower, year 80, year 81, year 82, and the horsepower-weight interaction term), indicating that this observation exert an undue influence on these regression coefficients.
+
+**The so what?:**
+We examined the influence of individual observations on our selected regression model using multiple diagnostic measures, including studentized deleted residuals with Bonferroni correction, DFFITS, Cook’s distance, and DFBETAS. 
+
+Observation 192 was identified as an outlier based on the Bonferroni simultaneous test procedure with a family significance level of $\alpha = 0.05$. This observation also exceed the commonly used threshold for DFFITS, indicating that it has a meaningful influence on the predicted values of the model. In contrast, the Cook’s distance value for this case is well below the 50th percentile threshold of the corresponding $F_{p, n-p}$ distribution, suggesting that this observation does not exert a strong influence on the overall fit of the regression model. Examination of the DFBETAS shows that several coefficients are affected by this observation. This indicates that specific regression coefficients are sensitive to the presence of this case. Taken together, these results suggest that while observation 192 influences some predicted values and individual coefficients, it does not dominate the overall model fit. As such, it should be acknowledged as a moderately influential point, but there is insufficient evidence to justify its removal from the analysis.
+
+
+## A Discussion on Model Deviations
+
+Based on our diagnostic analyses, the assumptions of linearity and independence of observations appear to be reasonably satisfied for the regression model. Additionally, the Durbin-Watson test indicates no evidence of first-order autocorrelation.
+
+However, two assumptions are not fully satisfied: constant error variance (homoscedasticity) and normality of the residuals.
+
+Let's look at transforming the response variable, mpg. 
+
+```{r, results='hold'}
+# Define transformations
+transformations = list("none" = function(x) x,
+                       "sqrt" = sqrt,
+                       "log10" = function(x) log10(x),
+                       "inverse" = function(x) 1/x)
+
+# Initialize results list
+transformed_models = list()
+resid_diagnostics = list()
+
+for(name in names(transformations)) {
+  
+  # Apply transformation to response in train_data_sub
+  train_data_sub$mpg_trans = transformations[[name]](train_data_sub$mpg)
+  
+  # Fit model with transformed response
+  mod = lm(mpg ~ displacement_c +
+             weight_c +
+             displacement_c:weight_c +
+             model_year_sub,
+           data = train_data_sub)
+  
+  transformed_models[[name]] = mod
+  
+  # Store studentized residuals and fitted values
+  resid_diagnostics[[name]] = data.frame(transformation = name,
+                                         stud_resid = rstudent(mod),
+                                         fitted = fitted(mod))
+}
+
+# Combine diagnostics for plotting
+resid_plot_df = bind_rows(resid_diagnostics)
+
+# Studentized residuals vs Fitted plot
+ggplot(resid_plot_df, aes(x = fitted, y = stud_resid)) +
+  geom_point(alpha = 0.5, color = "darkred") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "blue") +
+  geom_smooth(method = "loess", se = FALSE, color = "steelblue") +
+  facet_wrap(~transformation, scales = "free") +
+  labs(title = "Studentized Residuals vs Fitted Values for Different Transformations",
+       x = "Fitted Values",
+       y = "Studentized Residuals") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+The standard transformations did not substantially improve the heteroscedasticity issue, so we pivot to using a Box–Cox transformation instead.
+
+```{r results='hold'}
+# Response
+Y = train_data_sub$mpg
+
+# Predictors (main effects only; include interactions in the formula)
+X = train_data_sub[, c("weight_c", "horsepower_c", "model_year_sub")]
+
+# Compute K2 for Box-Cox
+K2 = exp(mean(log(Y)))
+
+# Function for standardized Box–Cox and SSE
+sse_lambda = function(lambda, df) {
+  K2 = exp(mean(log(df$Y)))
+  
+  if (lambda != 0) {
+    K1 = 1 / (lambda * (K2^(lambda - 1)))
+    W = K1 * (df$Y^lambda - 1)
+  } else {
+    W = K2 * log(df$Y)
+  }
+  
+  # Fit linear model including the horsepower*weight interaction
+  fit = lm(W ~ horsepower_c + weight_c  + horsepower_c:weight_c + model_year_sub, data = df)
+  SSE = sum(resid(fit)^2)
+  return(SSE)
+}
+
+# Prepare data frame for the function
+df_model = data.frame(Y = Y, X)
+
+# Evaluate SSE for a sequence of lambda values
+lambdas = seq(-2, 2, 0.01)
+SSEs = sapply(lambdas, function(l) sse_lambda(l, df_model))
+
+# Find lambda that minimizes SSE
+min_index = which.min(SSEs)
+best_lambda = lambdas[min_index]
+min_SSE = SSEs[min_index]
+
+# Create a results table
+results = data.frame(lambda = lambdas, SSE = round(SSEs, 1))
+
+# Display the best lambda and corresponding SSE
+cat("Lambda that minimizes SSE:", best_lambda, "\n")
+cat("Minimum SSE:", round(min_SSE, 2), "\n")
+
+# the top 10 SSE values
+results_sorted = results[order(results$SSE), ]
+head(results_sorted, 10)
+```
+
+The standardized Box-Cox procedure evaluates several transformations of the response variable mpg to identify the one that produces the best linear relationship with the predictors. For each $\lambda$ between -2 and 2, the transformed variable was regressed on the predictors, and the corresponding sum of squared errors (SSE) was computed.
+
+The results indicate that a transformation corresponding to $\lambda = 0.05$ provides the best linear fit among those considered. For $\lambda$ this small, the resulting transformation behaves almost identically to a natural logarithm. To see this, recall that for $\lambda \neq 0$ the standardized Box–Cox transformation is
+
+$$
+\begin{aligned}
+W_i &= K_1(Y_i^{\lambda} - 1), \\
+\text{where } K_1 &=\frac{1}{\lambda K_2^{\lambda-1}}, \\
+K_2 &= \left( \prod_{i=1}^n Y_i \right)^{1/n}.
+\end{aligned}
+$$
+
+When $\lambda = 0.05$, 
+
+$$
+\begin{aligned}
+K_1 &=\frac{1}{0.05 K_2^{0.05-1}} =  \frac{1}{0.05 K_2^{-0.95}} = \frac{K_2^{0.95}}{0.05}.
+\end{aligned}
+$$
+
+Now consider the term $Y_i^{0.05} - 1$. Using a first-order Taylor expansion of $Y^{\lambda}$ about $\lambda = 0$ yields
+
+$$
+\begin{aligned}
+Y_i^{\lambda} = e^{\lambda \log Y_i} \approx 1 + \lambda \log Y_i \quad \text{for small } \lambda.
+\end{aligned}
+$$
+Substituting $\lambda = 0.05$,
+
+$$
+\begin{aligned}
+Y_i^{0.05} -1 \approx  0.05 \log Y_i.
+\end{aligned}
+$$
+
+Therefore, the transformed response becomes
+$$
+\begin{aligned}
+W_i &= K_1(Y_i^{0.05} - 1) \approx \frac{K_2^{0.95}}{0.05} \cdot 0.05 \log Y_i = K_2^{0.95} \log Y_i.
+\end{aligned}
+$$
+
+Thus, apart from the constant multiplicative factor $K_2^{0.95}$, which does not affect the fitted values or inference in a linear regression, the Box–Cox transformation with $\lambda = 0.05$ is effectively equivalent to a logarithmic transformation of the response.
+
+Consequently, the Box–Cox results justify the use of a natural log transformation of mpg as a simpler and more interpretable alternative that achieves nearly the same improvement in variance stabilization as the optimal Box–Cox transformation.
+
+## The Final Model
+
+```{r, results='hold'}
+# Apply natural-log transformation to mpg
+train_data_sub$mpg_log = log(train_data_sub$mpg)
+
+# Refit the best-subsets model using the transformed response
+best_subset_model_log = lm(mpg_log ~ horsepower_c +
+                              weight_c +
+                              horsepower_c:weight_c +
+                              model_year_sub,
+                       data = train_data_sub)
+
+# View summary
+summary(best_subset_model_log)
+
+# Create a data frame with residuals and observation sequence
+train_data_sub = train_data_sub %>%
+  mutate(obs_seq = 1:length(best_subset_model_log$residuals),
+         residuals = best_subset_model_log$residuals,
+         fitted = fitted(best_subset_model_log),
+         stud_resid = rstudent(best_subset_model_log))
+```
+
+
+All diagnostic plots for the re-fitted regression model, following the transformation of mpg is provided below.
+
+Independence is by far the most important assumption to check.
+
+```{r, fig.width = 5, fig.height = 3, results='hold'}
+# Plot residuals vs observation sequence
+resid_vs_seq_final = ggplot(train_data_sub, aes(x = obs_seq, y = residuals)) +
+  geom_point(alpha = 0.3, color = "darkred") +
+  geom_smooth(method = "loess", color = "steelblue", se = FALSE, size = 1) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(title = "Residuals vs Observation Sequence",
+       x = "Observation Sequence",
+       y = "Residuals (log-mpg scale)") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+resid_vs_seq_final
+
+# Save the plot as a PNG
+ggsave(filename = "figures/resid_vs_seq_final.png",
+  plot = resid_vs_seq_final,
+  width = 5,
+  height = 3,     
+  units = "in",
+  dpi = 300)
+```
+
+This plot allows us to check for serial correlation. The residuals appear to be randomly scattered without visible trends or cycles, indicating that first-order autocorrelation is unlikely to be present. In other words, there is no visual evidence of time-based correlation or dependence in the errors. 
+
+```{r, fig.width = 5, fig.height = 3, results='hold'}
+# Plot residuals vs observation sequence
+resid_vs_year_final = ggplot(resid_df, aes(x = model_year_sub, y = residuals)) +
+  geom_point(alpha = 0.3, color = "darkred") +
+  geom_smooth(method = "loess", color = "steelblue", se = FALSE, size = 1) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(title = "Residuals vs Model Years",
+       x = "years",
+       y = "Residuals (log-mpg scale)") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+resid_vs_year_final
+
+# Save the plot as a PNG
+ggsave(filename = "figures/resid_vs_year_final.png",
+  plot = resid_vs_year_final,
+  width = 5,
+  height = 3,     
+  units = "in",
+  dpi = 300)
+```
+
+The plot aboeve of residuals against model years supports the assumption of independence of residuals, which is a key requirement for valid statistical inference in linear regression.
+
+To formally evaluate for first-order autocorrelation, we conduct a Durbin–Watson test. The test is performed at the $\alpha = 0.05$ significance level. The null hypothesis assumes that the residuals are uncorrelated ($\rho = 0$), while the alternative hypothesis allows for the presence of first-order autocorrelation ($\rho \neq 0$). Formally, we have
+
+$$
+\begin{aligned}
+H_{0}: &\quad \rho = 0 \\
+H_{A}: &\quad \rho \neq 0
+\end{aligned}
+$$
+
+```{r, results='hold'}
+dw_result = dwtest(best_subset_model_log, alternative = "two.sided")  
+
+dw_result
+```
+Based on the resulting $p$-value, there is insufficient evidence to reject the null hypothesis at the $\alpha = 0.05$ level. This indicates that there is no significant first-order autocorrelation in the residuals, which is consistent with the residuals versus observation sequence plot. Overall, this supports the assumption that the errors in our simple linear regression model are independent, and no temporal or cyclical structure remains unaccounted for in the data.
+
+Next, we examine the residuals versus fitted values plot.
+
+```{r, fig.width = 5, fig.height = 3, results='hold'}
+# Residuals vs Predictor
+resid_vs_mpg_final = ggplot(train_data_sub, aes(x = fitted, y = residuals)) +
+  geom_point(alpha = 0.3, color = "darkred") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  geom_smooth(method = "loess", se = FALSE, color = "steelblue") +
+  labs(title = "Residuals vs Fitted Values",
+       x = "Fitted Values (log mpg)",
+       y = "Residuals (log mpg)") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+resid_vs_mpg_final
+
+# Save the plot as a PNG
+ggsave(filename = "figures/resid_vs_mpg_final.png",
+  plot = resid_vs_mpg_final,
+  width = 5,
+  height = 3,     
+  units = "in",
+  dpi = 300)
+```
+
+```{r, fig.width = 5, fig.height = 3, results='hold'}
+# Studentized residuals vs Fitted Values
+stud_resid_plot_final = ggplot(train_data_sub, aes(x = fitted, y = stud_resid)) +
+  geom_point(alpha = 0.3, color = "darkred") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  geom_smooth(method = "loess", se = FALSE, color = "steelblue") +
+  labs(title = "Studentized Residuals vs Fitted Values",
+       x = "Fitted Values (log mpg)",
+       y = "Studentized Residuals") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+stud_resid_plot_final
+
+# Save the plot as a PNG
+ggsave(filename = "figures/stud_resid_plot_final.png",
+       plot = stud_resid_plot_final,
+       width = 5,
+       height = 3,
+       units = "in",
+       dpi = 300)
+```
+
+
+The residuals versus fitted values plot shows residuals randomly scattered around zero, with no obvious systematic patterns or curvature. The relatively flat LOESS curve supports the assumption of linearity. Additionally, there is no clear cone or funnel shape, indicating that heteroscedasticity does not appear to be a concern.
+
+To further assess the constant variance (homoscedasticity) assumption of the regression model, we employ the Brown–Forsythe test, a robust modification of Levene’s test that uses deviations from the median rather than the mean and does not rely on the normality of the residuals. The test evaluates whether the variability of the residuals differs across groups. Significant differences in residual variability suggest that the assumption of constant variance may be violated.
+
+In our dataset, observations are naturally grouped by model year. If the residual variance differs across these year groups, the Brown–Forsythe test will detect this as a statistically significant difference.
+
+Using a significance level of $\alpha = 0.05$, the hypotheses for the Brown–Forsythe test are:
+
+$$
+\begin{aligned}
+H_0: & \quad \sigma_{73}^2 = \sigma_{79}^2 = \sigma_{80}^2 = \sigma_{81}^2 = \sigma_{82}^2 \quad \text{Residual variance is equal between groups (homoscedasticity)}\\
+H_A: & \quad \sigma_{i}^2 \neq \sigma_{j}^2  \quad \text{for some } i \neq j \quad \text{Residual variance differs between groups (heteroscedasticity)}
+\end{aligned}
+$$
+
+```{r, results='hold'}
+# Brown–Forsythe test (Levene test using median)
+bf_test = leveneTest(residuals(best_subset_model_log) ~ model_year_sub, 
+                     data = train_data_sub, 
+                     center = median)
+
+bf_test
+```
+
+The Brown–Forsythe test returned a $p$-value larger than 0.05. Therefore, we fail to reject the null hypothesis and we conclude that there is no statistical evidence of unequal residual variance across model-year groups. This provides support that the transformed model adequately satisfies the constant variance assumption.
+
+Finally, we examine the Normal QQ plot.
+
+```{r, fig.width = 5, fig.height = 3, results='hold'}
+# Normal Q-Q Plot of Residuals
+resid_qq_final = ggplot(train_data_sub, aes(sample = residuals)) +
+  stat_qq(alpha = 0.3, color = "darkred") +
+  stat_qq_line(color = "steelblue") +
+  labs(title = "Normal Q-Q Plot of Residuals",
+       x = "Theoretical Quantiles",
+       y = "Residuals (log-mpg scale)") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+resid_qq_final
+
+# Save the plot as a PNG
+ggsave(filename = "figures/resid_qq_final.png",
+  plot = resid_qq_final,
+  width = 5,
+  height = 3,     
+  units = "in",
+  dpi = 300)
+```
+
+If the residuals were approximately normally distributed, we would expect the points to lie close to the reference line. This now appears to be the case, except at the tail of the distribution.
+
+To formally assess the normality of the residuals, we now apply the Shapiro-Wilk test. We conduct the test at the significance level $\alpha = 0.05$. The Shapiro-Wilk test formally evaluates whether the residuals are normally distributed. The hypotheses for the test are:
+
+$$
+\begin{aligned}
+H_{0}: & \quad \text{The residuals are normally distributed} \\
+H_{A}: & \quad \text{The residuals are not normally distributed}
+\end{aligned}
+$$
+
+```{r, results='hold'}
+# Shapiro-Wilk test for normality
+shapiro_test = shapiro.test(train_data_sub$residuals)
+
+# Print results
+shapiro_test
+```
+
+Since the $p$-value is less than 0.05, we reject the null hypothesis. This indicates that the residuals are not approximately normally distributed. However, given the sample size and the fact that departures from normality are primarily confined to the tails, this violation is not unexpected and is unlikely to materially affect inference for the regression coefficients.
+
+Let's now examine multicolinearity in the model.
+
+```{r, results='hold'}
+# compute VIFs
+vif(best_subset_model_log)
+```
+
+The generalized VIF results indicate that, after accounting for the associated degrees of freedom, there are no meaningful multicollinearity concerns. All adjusted VIF values are well below commonly used thresholds (e.g., 5 or 10). The largest adjusted VIF occurs for horsepower, with a value of approximately 2, which is generally considered mild and not indicative of problematic collinearity.
+
+## Model Validation
+
+Now, let’s take a look at how the model performs on the validation dataset.
+
+```{r, results='hold'}
+# Create a factor for just the years of interest, with 70 as reference
+valid_data_sub = valid_data %>%
+  mutate(model_year_sub = ifelse(model.year %in% c(73, 79, 80, 81, 82), 
+                                 as.character(model.year), "70"))  # 70 = reference
+
+# Make sure factor levels match training set
+valid_data_sub$model_year_sub = factor(valid_data_sub$model_year_sub, 
+                                       levels = c("70","73","79","80","81","82"))
+
+# transform the response
+valid_data_sub$mpg_log = log(valid_data_sub$mpg)
+
+# Fit the best subset model on validation set
+valid_subset_model = lm(mpg_log ~ horsepower_c + 
+                          weight_c + 
+                          weight_c:horsepower_c +
+                          model_year_sub,
+                        data = valid_data_sub)
+
+summary(valid_subset_model)
+```
+
+
+
+```{r, results='hold'}
+# Extract coefficients and standard errors
+train_coef = coef(best_subset_model_log)
+train_se   = summary(best_subset_model_log)$coefficients[, "Std. Error"]
+
+val_coef   = coef(valid_subset_model)
+val_se     = summary(valid_subset_model)$coefficients[, "Std. Error"]
+
+# Ensure all coefficients are matched by name
+coef_names = names(train_coef)
+
+# Create comparison table
+coef_comparison = data.frame(Coefficient  = coef_names,
+                             Train_Estimate = train_coef[coef_names],
+                             Train_SE = train_se[coef_names],
+                             Validation_Estimate = val_coef[coef_names],
+                             Validation_SE = val_se[coef_names])
+
+# Print
+print(coef_comparison, row.names = FALSE)
+```
+
+The model fitted to the validation dataset produces regression coefficient estimates that are highly consistent with those from the training set. All coefficients maintain the same sign and are similar in magnitude, indicating that the relationships identified by the model generalize well to new data.
+
+Overall, the model appears stable for both the main continuous predictors (horsepower and weight), the model year indicators, and the interaction term, suggesting reliable performance across both the training and validation datasets.
+
+```{r}
+# Training MSE
+train_resid = residuals(best_subset_model_log)
+train_df = df.residual(best_subset_model_log)
+train_MSE = sum(train_resid^2) / train_df
+round(train_MSE, 4)
+
+# Validation MSE
+val_resid = residuals(valid_subset_model)
+val_df = df.residual(valid_subset_model)
+val_MSE = sum(val_resid^2) / val_df
+round(val_MSE, 4)
+```
+
+
+Additionally, the $MSE$ values for the two datasets are close in magnitude (0.0114 for the model-building data and 0.0146 for the validation sample). Since the validation $MSE$ is only slightly larger this indicates that the model’s predictive accuracy does not deteriorate substantially when applied to an independent sample. 
+
+
+```{r}
+# Adjusted R-squared
+train_adj_r2 = summary(best_subset_model_log)$adj.r.squared
+val_adj_r2 = summary(valid_subset_model)$adj.r.squared
+
+cat("Training Adjusted R-squared:", round(train_adj_r2, 4), "\n")
+cat("Validation Adjusted R-squared:", round(val_adj_r2, 4), "\n")
+```
+
+The adjusted $R^2$ values are also comparable across samples.
+
+Together, these comparisons suggest that the regression model is stable, shows no evidence of overfitting, and demonstrates good external predictive ability when applied to new applicants.
+
+
+```{r}
+# Predicted values on the validation set
+y_hat_valid = predict(best_subset_model_log, newdata = valid_data_sub)
+
+# Mean squared prediction error (MSPE)
+MSPE = mean((valid_data_sub$mpg_log - y_hat_valid)^2)
+MSPE
+```
+
+The mean squared prediction error ($MSPR$) for the validation dataset is 0.0149, which is very close to the mean squared error ($MSE$) of 0.0114 obtained from the model-building dataset. This suggests that there is little evidence of substantial bias in the model’s predictive performance. The model appears to generalize well to new data and does not show signs of substantial overfitting or bias. The slight increase is expected when moving from training to independent validation data.
+
+
+
+## Fitted the Final Model on Both the Training and Validation Sets
+
+
+```{r}
+# Combine training and validation datasets
+combined_data = bind_rows(train_data_sub, valid_data_sub)
+
+# Fit the final model on the combined dataset
+final_model_combined = lm(mpg_log ~ horsepower_c +
+                             weight_c +
+                             horsepower_c:weight_c +
+                             model_year_sub,
+                           data = combined_data)
+
+# View the summary
+summary(final_model_combined)
+```
+
+This gives us a single model fit using all observations. 
+
+
+## Inferences on the Model
+
+Making inferences on a model with a transformed response and centered predictors requires careful interpretation.
+
+**Super Important**: The final model only contains coefficients for model year levels 73, 79, 80, 81, and 82. Any attempt to predict for a year outside these levels (like 1971, 1972, …, 1978, etc.) would be extrapolation, because the model has no data to estimate the effect of those years. Predictions outside the observed levels should be treated with caution.
+
+The final model has the following form:
+
+$$
+\begin{aligned}
+\log(\text{mpg}) &= \beta_0 
++ \beta_1 (\text{horsepower}_c)
++ \beta_2 (\text{weight}_c)
++ \beta_3 \left(\text{horsepower}_c \cdot \text{weight}_c \right) \\[6pt]
+&\quad + \beta_{4} X_{i,73} 
++ \beta_{5} X_{i,79} 
++ \beta_{6} X_{i,80}
++ \beta_{7} X_{i,81}
++ \beta_{8} X_{i,82}
++ \varepsilon_i.
+\end{aligned}
+$$
+
+where $\text{horsepower}_c$ and $\text{weight}_c$ are centered, $\text{mpg}$ has been log-transformed, and 
+
+$$
+\begin{aligned}
+X_{i,j} &=
+\begin{cases}
+1, & \text{if model year} = j \\
+0, & \text{otherwise}
+\end{cases}
+\quad (j = 73, 79, 80, 81, 82)
+\end{aligned}
+$$
+
+The main effect of a centered continuous predictor represents the expected change in $\log(\text{mpg})$ per unit change in the predictor when the other continuous predictors are at their mean.
+
+Interaction coefficients indicate how the effect of one centered predictor changes relative to deviations from the mean of the other predictor.
+
+Because the response is log-transformed, coefficients can be interpreted multiplicatively on the original mpg scale. AKA, a one-unit increase in a predictor multiplies the expected mpg by $e^{\beta_i}$.
+
+Here is the math: Because our response is log-transformed, then
+
+$$
+\begin{aligned}
+\log(\text{mpg}) = \hat{y} \implies \text{mpg} = e^{\hat{y}}
+\end{aligned}
+$$
+
+This means that a unit change in a predictor multiplies the expected mpg by $e^{\beta_i}$. 
+
+So, to predict $\log(\text{mpg})$, simply use the model’s predict() function.
+
+To predict $\text{mpg}$ on the original scale, back-transform using the exponential function: $\text{mpg} = e^{\hat{y}}$.
+
+For example, consider a historical car with realistic characteristics from 1979:
+
+```{r}
+# Historical car
+historical_car = data.frame(
+  horsepower = 150,
+  weight = 2800,
+  model_year = 79
+)
+
+# Center continuous predictors using training means
+historical_car$horsepower_c = historical_car$horsepower - mean(combined_data$horsepower)
+historical_car$weight_c     = historical_car$weight - mean(combined_data$weight)
+
+# Create factor for model_year_sub with all levels (including baseline "70")
+historical_car$model_year_sub = factor(historical_car$model_year,
+                                       levels = levels(combined_data$model_year_sub))
+
+# Select predictors
+new_data = historical_car[, c("horsepower_c", "weight_c", "model_year_sub")]
+
+# Predict log-mpg with 95% prediction interval
+pred_log = predict(final_model_combined, newdata = new_data, interval = "prediction", level = 0.95)
+
+# Back-transform
+pred_mpg = exp(pred_log)
+
+pred_results = data.frame(
+  Predicted_mpg = pred_mpg[, "fit"],
+  Lower_95_PI = pred_mpg[, "lwr"],
+  Upper_95_PI = pred_mpg[, "upr"]
+)
+
+pred_results
+```
+
+We are 95% confident that a single car with these characteristics (horsepower 150, weight 2800 lbs, model year 1979) will have mpg between 17.55 and 27.87.
+
+This interval reflects both uncertainty in the model estimates and the natural variability of individual observations.
+
+Note that the interval is wider than a confidence interval for the mean response (computed below), because it accounts for variability in individual outcomes, not just the mean.
+
+```{r}
+# Confidence interval for the mean log-mpg
+conf_log = predict(final_model_combined, newdata = new_data, 
+                   interval = "confidence", level = 0.95)
+
+# Back-transform to original scale
+conf_mpg = exp(conf_log)
+
+# Combine results
+conf_results = data.frame(
+  Predicted_mpg_mean = conf_mpg[, "fit"],
+  Lower_95_CI = conf_mpg[, "lwr"],
+  Upper_95_CI = conf_mpg[, "upr"]
+)
+
+conf_results
+```
+
+The predicted mean mpg for a car with 150 horsepower, 2800 lbs weight, and model year 79 is 22.11 mpg. This is the expected fuel efficiency for cars with these characteristics based on the final model.
+
+The 95% confidence interval for the mean mpg ranges from 20.82 to 23.48 mpg. This interval reflects the uncertainty in estimating the average mpg for all cars with the same characteristics. In other words, if you were to repeatedly sample cars with these features and fit the same model, the mean mpg would fall within this range 95% of the time. 
+
+
+
+
+
+
+
+
+
